@@ -2,24 +2,20 @@ import CoreGraphics
 import Foundation
 import ApplicationServices
 
-/// Watches the real mouse cursor globally and reports its position whenever it's
-/// over the virtual display — this is the piece that makes the cursor feel
-/// instant on the iMac side (see Protocol.swift's CursorPacket doc comment):
-/// position updates ride their own channel instead of being baked into encoded
-/// video frames.
+/// 全局监听真实鼠标光标，并在光标位于虚拟显示器上时上报位置。
+/// 这是 iMac 端光标能够即时响应的关键，详见 Protocol.swift 中 CursorPacket 的说明：
+/// 位置更新使用独立通道传输，而不是烤进编码后的视频帧。
 ///
-/// Needs Accessibility (Input Monitoring) permission — macOS won't deliver
-/// global mouse events to an unprivileged process. If tap creation fails, we
-/// tell the user exactly what to grant rather than silently doing nothing.
+/// 需要“辅助功能”或“输入监控”权限；macOS 不会向无权限进程发送全局鼠标事件。
+/// 若监听器创建失败，必须明确提示用户授予哪项权限，不能静默失效。
 final class MouseTap {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private let virtualDisplayID: CGDirectDisplayID
     private let width: Int
     private let height: Int
-    /// isVisible is false exactly once per exit — the receiver hides its cursor
-    /// overlay on that signal instead of leaving it stuck at the last position
-    /// it saw before the cursor moved back onto this Mac's own screen.
+    /// 每次光标离开虚拟显示器时，isVisible 只会发送一次 false。
+    /// 接收端据此隐藏叠加光标，避免光标移回本机屏幕后仍停留在离开前的位置。
     var onPosition: ((Float, Float, Bool) -> Void)?
     private var eventCount = 0
     private var isInsideBounds = false
@@ -62,7 +58,7 @@ final class MouseTap {
 
     private func handle(_ event: CGEvent) {
         let displayBounds = CGDisplayBounds(virtualDisplayID)
-        let location = event.location // global coords, origin top-left of the primary display, points
+        let location = event.location // 全局点坐标，原点位于主显示器左上角
         eventCount += 1
         if eventCount <= 10 {
             fputs("[MouseTap] event #\(eventCount) at \(location), displayBounds=\(displayBounds)\n", stderr)

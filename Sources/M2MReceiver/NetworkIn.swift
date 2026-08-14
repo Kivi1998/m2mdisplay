@@ -94,8 +94,8 @@ final class CursorReceiver {
         connection.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
             if let data, let packet = CursorPacket.decode(data) {
-                // Drop stale/out-of-order packets — only the newest position matters.
-                // Wraparound-safe comparison: treat sequence numbers as a ring, like TCP does.
+                // 丢弃过期或乱序数据包，因为只有最新位置有意义。
+                // 使用可安全处理回绕的比较方式，像 TCP 一样把序列号视为环形空间。
                 let isNewer = self.lastSequence.map { Int32(bitPattern: packet.sequence &- $0) > 0 } ?? true
                 if isNewer {
                     self.lastSequence = packet.sequence

@@ -28,7 +28,7 @@ final class FrameCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         let config = SCStreamConfiguration()
         config.width = width
         config.height = height
-        config.showsCursor = false // cursor is streamed on its own low-latency channel instead
+        config.showsCursor = false // 光标改由独立低延迟通道传输
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(frameRate))
         config.queueDepth = 3

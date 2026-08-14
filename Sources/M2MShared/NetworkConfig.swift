@@ -1,14 +1,14 @@
 import Foundation
 
-/// Fixed addressing on the Thunderbolt Bridge subnet (10.10.10.0/24), confirmed via
-/// `system_profiler SPThunderboltDataType` / `ifconfig bridge0` diagnostics: MacBook Pro
-/// is always .1, iMac is always .2 on this link, so we skip Bonjour discovery entirely
-/// and connect directly — one less moving part that could fall back to Wi-Fi.
+/// 雷雳桥接子网（10.10.10.0/24）使用固定地址。
+/// 已通过 `system_profiler SPThunderboltDataType` 和 `ifconfig bridge0` 确认：
+/// MacBook Pro 始终使用 .1，iMac 始终使用 .2。因此无需 Bonjour 发现，
+/// 直接连接即可，也避免系统意外回退到无线网络。
 public enum NetworkConfig {
-    public static let senderHost = "10.10.10.1"   // MacBook Pro
-    public static let receiverHost = "10.10.10.2" // iMac
+    public static let senderHost = "10.10.10.1"   // 发送端：MacBook Pro
+    public static let receiverHost = "10.10.10.2" // 接收端：iMac
 
     public static let videoPort: UInt16 = 51230
     public static let cursorPort: UInt16 = 51231
-    public static let ackPort: UInt16 = 51232 // receiver -> sender, "this cursor position was just rendered"
+    public static let ackPort: UInt16 = 51232 // 接收端 → 发送端：该光标位置刚刚完成渲染
 }

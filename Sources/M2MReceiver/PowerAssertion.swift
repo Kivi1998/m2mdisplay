@@ -1,11 +1,9 @@
 import IOKit.pwr_mgt
 import Foundation
 
-/// Holds this Mac awake and its display on for as long as it's alive. Without
-/// this, macOS has no idea anything is "using" the screen — we're pushing
-/// pixels over the network, not touching this Mac's own keyboard/mouse, so its
-/// idle timers see no activity and the display sleeps/locks on schedule, right
-/// on top of whatever we're rendering.
+/// 在进程存活期间保持这台 Mac 和显示器唤醒。若没有该断言，macOS 不会知道
+/// 屏幕正在被使用，因为画面来自网络，并未操作本机键盘或鼠标。空闲计时器会
+/// 因检测不到活动而按计划休眠或锁屏，直接覆盖正在渲染的画面。
 final class PowerAssertion {
     private var displayAssertionID: IOPMAssertionID = 0
     private var systemAssertionID: IOPMAssertionID = 0

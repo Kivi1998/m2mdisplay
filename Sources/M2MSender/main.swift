@@ -12,14 +12,11 @@ signal(SIGINT) { _ in
     exit(0)
 }
 
-// Process-lifetime holders. Everything that needs to keep running (the capture
-// stream, the network connections, the event tap) has to be reachable from
-// something that outlives the `Task` closure below — local `let`s inside that
-// closure get deallocated the moment the closure body finishes executing its
-// synchronous setup code, which silently tore down the SCStream before it ever
-// delivered a frame (confirmed via Console: "stopping a deallocated stream that
-// is still running"). Global `var`s have process lifetime, so assigning into
-// these is what actually keeps things alive.
+// 进程生命周期持有器。抓屏流、网络连接和事件监听器等需要持续运行的对象，
+// 必须由生命周期长于下方 `Task` 闭包的对象持有。闭包内的局部 `let` 会在同步
+// 初始化代码执行完毕后立即释放，曾导致 SCStream 在输出第一帧前被静默销毁；
+// 控制台确认信息为“stopping a deallocated stream that is still running”。
+// 全局 `var` 与进程同寿命，将对象保存到这里才能真正保持运行。
 var keepAliveVirtualDisplay: VirtualDisplay?
 var keepAliveCapturer: FrameCapturer?
 var keepAliveEncoder: VideoEncoder?
@@ -28,21 +25,18 @@ var keepAliveCursorSender: CursorSender?
 var keepAliveMouseTap: MouseTap?
 var keepAliveAckReceiver: AckReceiver?
 
-// Everything async lives inside this Task. Top-level `await` in main.swift taints
-// the *whole file* as an implicit async entry point, and calling a blocking
-// "run forever" primitive from anywhere inside that context crashes libdispatch's
-// own sanity check ("dispatch_main called from a block on the main queue") —
-// bit us in the real cross-machine test after the process ran fine for a while,
-// then died. Keeping setup in a plain Task and the run-forever call as the one
-// truly-synchronous top-level statement is what makes it legal.
+// 所有异步逻辑都放在这个 Task 中。若在 main.swift 顶层使用 `await`，整个文件会成为
+// 隐式异步入口；在该上下文中调用“永久运行”的阻塞原语，会触发 libdispatch 自检崩溃：
+// “dispatch_main called from a block on the main queue”。跨设备测试曾在运行一段时间后
+// 因此退出。将初始化保留在普通 Task 中，并让永久运行调用成为唯一真正同步的顶层语句，
+// 才符合运行时要求。
 Task {
     do {
         let receiverHost = Endpoints.receiverHost
         print("Target receiver: \(receiverHost) (video:\(NetworkConfig.videoPort) cursor:\(NetworkConfig.cursorPort))")
 
-        // Keep the desktop's layout and text size at 1920x1080. backingScale=2
-        // only gives every logical point a 2x2 Retina pixel grid; it does not
-        // make windows or text smaller.
+        // 桌面布局和文字尺寸保持为 1920×1080。backingScale=2 只让每个逻辑点
+        // 使用 2×2 Retina 像素网格，不会缩小窗口或文字。
         guard let virtualDisplay = VirtualDisplay(
             name: "M2M Display",
             logicalWidth: 1920,
@@ -60,10 +54,9 @@ Task {
 
         let capturer = FrameCapturer(displayID: virtualDisplay.displayID, width: virtualDisplay.pixelWidth, height: virtualDisplay.pixelHeight)
         keepAliveCapturer = capturer
-        // 10Mbps looked visibly blurry for 1080p60 desktop content (dense text,
-        // sharp UI edges compress far worse than natural video) — bumped way up
-        // since the Thunderbolt Bridge link has tens of Gbps to spare and was
-        // never remotely close to the bottleneck.
+        // 10 Mbps 编码 1080p60 桌面内容时明显模糊。密集文字和锐利界面边缘
+        // 比自然视频更难压缩，因此大幅提高码率。雷雳桥接链路拥有数十 Gbps 余量，
+        // 从未接近网络瓶颈。
         let encoder = try VideoEncoder(width: virtualDisplay.pixelWidth, height: virtualDisplay.pixelHeight, frameRate: 60, averageBitrateBps: 60_000_000)
         keepAliveEncoder = encoder
         let videoSender = VideoSender(host: receiverHost, port: NetworkConfig.videoPort)
@@ -81,10 +74,8 @@ Task {
         capturer.onFrame = { sampleBuffer in
             rawFrames += 1
             if rawFrames == 60, let pb = sampleBuffer.imageBuffer {
-                // One-shot ground-truth dump: exactly what the encoder receives,
-                // before any H.264 compression — the reference point for
-                // figuring out whether quality loss happens in encode, decode,
-                // or the receiver's final render/composite step.
+                // 一次性保存基准帧：内容与编码器收到的数据完全一致，且尚未经过视频压缩。
+                // 该帧用于判断画质损失发生在编码、解码，还是接收端最终渲染与合成阶段。
                 let ciImage = CIImage(cvPixelBuffer: pb)
                 let ctx = CIContext()
                 if let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent) {
@@ -104,8 +95,7 @@ Task {
             print("Stream stopped: \(String(describing: error))")
         }
 
-        // Mouse tracking doesn't depend on the video channel — start it
-        // independently instead of blocking behind the video handshake.
+        // 鼠标跟踪不依赖视频通道，应独立启动，不能被视频握手阻塞。
         var cursorSeq: UInt32 = 0
         var sentAt: [UInt32: CFAbsoluteTime] = [:]
         var latenciesMs: [Double] = []
@@ -117,9 +107,9 @@ Task {
             cursorSender.send(CursorPacket(x: x, y: y, cursorType: CursorType.arrow.rawValue, sequence: cursorSeq, isVisible: isVisible))
         }
 
-        // Round-trip "mouse moved -> rendered on the iMac -> ack back" timing.
-        // Single-clock measurement (no cross-machine sync needed) — this is the
-        // actual end-to-end number that matters, not a network ping.
+        // 测量“鼠标移动 → iMac 完成渲染 → 确认返回”的往返时间。
+        // 全程使用发送端单机时钟，无需跨设备时钟同步；该数值是真实端到端延迟，
+        // 而不是单纯的网络延迟。
         let ackReceiver = AckReceiver()
         keepAliveAckReceiver = ackReceiver
         ackReceiver.onAck = { sequence in
@@ -134,10 +124,9 @@ Task {
                 print(String(format: "[Latency] n=%d  last=%.2fms  avg=%.2fms  p50=%.2fms  p95=%.2fms  min=%.2fms  max=%.2fms",
                               latenciesMs.count, ms, avg, p50, p95, sorted.first ?? 0, sorted.last ?? 0))
             }
-            // Cap growth so a long-running session doesn't leak memory —
-            // sentAt entries only accumulate if an ack is lost, which the
-            // cursor channel's own semantics (latest-wins) make rare and
-            // harmless to just drop.
+            // 限制集合增长，避免长时间运行时泄漏内存。只有确认包丢失时 sentAt
+            // 才会积累；光标通道采用“最新位置优先”语义，因此这种情况很少出现，
+            // 直接清理也不会影响正确性。
             if sentAt.count > 200 { sentAt.removeAll() }
         }
         try? ackReceiver.start(port: NetworkConfig.ackPort)
@@ -156,7 +145,7 @@ Task {
         try await videoSender.waitUntilReady()
         print("Video channel connected")
 
-        // Give WindowServer a moment to register the new display before SCShareableContent enumerates it.
+        // 在 SCShareableContent 枚举前，给窗口服务器一点时间注册新显示器。
         for attempt in 1...10 {
             do {
                 try await capturer.start()
@@ -175,14 +164,11 @@ Task {
     }
 }
 
-// dispatchMain() only pumps the main GCD queue — CGEventTap's run loop source
-// (CFRunLoopAddSource(CFRunLoopGetMain(), ...) in MouseTap) never actually got
-// serviced under it: the tap created fine and IOHIDCheckAccess reported Input
-// Monitoring as GRANTED, yet zero mouse events ever arrived, on every run since
-// dispatchMain() replaced RunLoop.main.run() to fix the earlier libdispatch
-// crash. CFRunLoopRun() drives CFRunLoopGetMain() directly, and the main GCD
-// queue is itself served through the CFRunLoop when running on the main thread,
-// so this keeps both working without reintroducing the original crash (that
-// was about calling *from an implicit async context*, not about which specific
-// blocking call was used).
+// dispatchMain() 只驱动主 GCD 队列，无法处理 CGEventTap 的运行循环源。
+// MouseTap 中通过 CFRunLoopAddSource(CFRunLoopGetMain(), ...) 添加的监听源因此得不到服务：
+// 监听器可以正常创建，IOHIDCheckAccess 也显示已授予输入监控权限，但自从为解决早期
+// libdispatch 崩溃而用 dispatchMain() 替换 RunLoop.main.run() 后，每次运行都收不到鼠标事件。
+// CFRunLoopRun() 会直接驱动 CFRunLoopGetMain()；在主线程运行时，主 GCD 队列本身也通过
+// CFRunLoop 获得服务，因此两者可以同时工作，且不会重新引入原崩溃。原问题来自在隐式异步
+// 上下文中调用阻塞函数，而不是某个特定阻塞函数本身。
 CFRunLoopRun()

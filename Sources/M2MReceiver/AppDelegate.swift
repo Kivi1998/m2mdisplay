@@ -9,15 +9,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let videoReceiver = VideoReceiver()
     private let cursorReceiver = CursorReceiver()
     private var formatDescription: CMFormatDescription?
-    // Two different things, easy to conflate into one variable (did that once —
-    // decoder showed only the top-left quarter, zoomed to fill the screen,
-    // because it was told the frame was 1920x1080 pixels when the actual H.264
-    // bitstream is 3840x2160):
-    //  - cursor position math needs *points* (CGDisplayBounds' unit — stayed
-    //    1920x1080 even after the virtual display's pixel mode became 3840x2160;
-    //    the system auto-picked a 2x/Retina point scaling for that pixel count,
-    //    matching the iMac's own real display, which is what fixed the blur)
-    //  - the video format description needs the actual encoded *pixel* size
+    // 以下是两个不同概念，很容易误合并为一个变量。曾经因为解码器按 1920×1080
+    // 解释实际为 3840×2160 的视频码流，导致画面只显示左上角四分之一并放大铺满屏幕：
+    //  - 光标位置计算需要使用“点”。CGDisplayBounds 的单位是点；即使虚拟显示器
+    //    的像素模式为 3840×2160，其逻辑尺寸仍为 1920×1080。系统为这些像素选择
+    //    2 倍 Retina 点缩放，与 iMac 实际显示方式一致，这也是清晰度提升的关键。
+    //  - 视频格式描述必须使用编码后码流的真实像素尺寸。
     private var cursorSpaceWidth = 1920
     private var cursorSpaceHeight = 1080
     private var videoPixelWidth = 3840
@@ -27,13 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cursorHideTimer: DispatchSourceTimer?
     private let ackSender = AckSender(host: Endpoints.senderHost, port: NetworkConfig.ackPort)
 
-    /// NSScreen.main is whatever the system currently considers its main display,
-    /// which can be a *virtual* screen (Sidecar/AirPlay/another instance of this
-    /// very app) rather than the physical panel in front of the person sitting at
-    /// this Mac. This receiver's only job is to draw on real physical glass, so it
-    /// explicitly targets the built-in/physically-attached display and never trusts
-    /// "main" — bit us in local same-machine testing where the existing AirPlay
-    /// session to the iMac had claimed the Main Display slot.
+    /// NSScreen.main 返回系统当前认定的主显示器，它可能是虚拟屏幕，例如 Sidecar、
+    /// AirPlay 或本应用的另一个实例，而不一定是用户眼前的物理面板。接收端的职责是
+    /// 把画面绘制到真实屏幕，因此必须明确选择内建或物理连接的显示器，不能相信
+    /// “主显示器”标记。本机回环测试曾遇到已有 AirPlay 会话占用主显示器位置的问题。
     private func physicalScreen() -> NSScreen {
         for screen in NSScreen.screens {
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
@@ -59,20 +53,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let screenFrame = physicalScreen().frame
         window = NSWindow(contentRect: screenFrame, styleMask: [.borderless], backing: .buffered, defer: false)
-        // Deliberately NOT sitting above the real menu bar anymore. A level
-        // above .mainMenu covers it outright (cosmetically nicer — no double
-        // menu bar) but also made the window immune to Mission Control / Cmd+Tab,
-        // which turned into a real incident: it covered someone's live screen
-        // with no visible way back short of a hard reboot. .floating leaves the
-        // double-menu-bar cosmetic issue in place, but every normal macOS escape
-        // route (Mission Control, Cmd+Tab, Cmd+`) still works. That trade is not
-        // close — never revisit this without a solid non-visual kill switch
-        // (a keyboard shortcut alone was not enough when the user had no way to
-        // even read what the shortcut was).
+        // 窗口不再置于真实菜单栏之上。高于 .mainMenu 的层级虽然能遮住菜单栏，
+        // 避免出现双菜单栏，但也会使 Mission Control 和 Cmd+Tab 无法切出。
+        // 这曾造成真实事故：窗口完全覆盖正在使用的屏幕，除强制重启外没有可见返回方式。
+        // 使用 .floating 会保留双菜单栏这一外观问题，但 Mission Control、Cmd+Tab、
+        // Cmd+` 等 macOS 常规退出路径仍然有效。除非提供可靠的非视觉终止开关，
+        // 否则不得重新提高窗口层级；仅依赖用户看不到说明的快捷键并不可靠。
         window.level = .floating
         window.backgroundColor = .black
         window.isOpaque = true
-        window.ignoresMouseEvents = true // this Mac has no input devices attached in this setup — see project notes
+        window.ignoresMouseEvents = true // 当前部署方式未连接本机输入设备，详见项目说明
         window.collectionBehavior = [.stationary, .ignoresCycle]
         displayView = DisplayView(frame: window.contentView?.bounds ?? screenFrame)
         displayView.autoresizingMask = [.width, .height]
@@ -81,23 +71,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.setActivationPolicy(.accessory)
 
-        // This Mac's own real cursor has nothing driving it (no local input
-        // device is attached in this setup), so it just sits wherever it was
-        // last, on top of our rendered overlay — two arrows at once. Global,
-        // works regardless of which app has focus; explicitly paired with
-        // CGDisplayShowCursor on quit so a real local user isn't left with an
-        // invisible pointer if they ever do sit down at this Mac.
+        // 当前环境没有连接本地输入设备，因此这台 Mac 的真实光标会停留在上次位置，
+        // 并叠在应用渲染的光标之上，形成两个箭头。这里进行全局隐藏，不受焦点应用影响；
+        // 退出时必须显式调用 CGDisplayShowCursor，避免本地用户以后使用这台 Mac 时
+        // 发现真实指针仍处于隐藏状态。
         //
-        // A single hide-on-launch call reportedly doesn't stick — macOS re-shows
-        // the real cursor on its own after some system event (display
-        // reconfiguration, a window server hiccup, etc.), a known quirk with
-        // CGDisplayHideCursor in other full-screen/kiosk apps. Re-asserting on a
-        // timer is the standard workaround — but Hide/Show are refcounted per
-        // Apple's docs, so blindly calling Hide on every tick would leave it
-        // needing dozens of matching Show calls to undo, and a single Show on
-        // quit would leave the real cursor stuck invisible forever. Each tick
-        // pairs Show+Hide (net refcount change: zero) purely to force a fresh
-        // redraw, so the hide depth never drifts from the original single Hide().
+        // 启动时只隐藏一次并不稳定。显示器重配置或窗口服务器短暂异常后，macOS 可能
+        // 自动重新显示真实光标，这是其他全屏或自助终端应用使用 CGDisplayHideCursor 时
+        // 也会遇到的系统特性。定时重新确认隐藏状态是常见解决办法，但 Apple 文档说明
+        // Hide/Show 使用引用计数；若每次定时器触发都盲目调用 Hide，退出时就需要同样次数
+        // 的 Show 才能恢复，单次 Show 会让光标永久不可见。因此每次触发都成对执行
+        // Show+Hide，引用计数净变化为零，只用于强制刷新，隐藏深度始终保持为初次 Hide。
         let hideResult = CGDisplayHideCursor(physicalDisplayID())
         print("[M2MReceiver] hid this Mac's own cursor (result: \(hideResult.rawValue))")
         let cursorHideTimer = DispatchSource.makeTimerSource(queue: .main)
@@ -143,9 +127,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     self.displayView.hideCursor()
                 }
-                // Ack fires the instant the position is actually on screen, not
-                // just received — this is the honest "mouse moved -> pixel
-                // changed" latency measurement point.
+                // 主线程提交图层位置更新后发送确认，而不是刚收到网络数据时发送。
+                // 该时间点可衡量事件处理与网络往返，但不包含合成器排队和面板扫描。
                 self.ackSender.send(AckPacket(sequence: packet.sequence))
             }
         }
@@ -186,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_ notification: Notification) {
-        CGDisplayShowCursor(physicalDisplayID()) // don't leave a real local user with an invisible pointer
+        CGDisplayShowCursor(physicalDisplayID()) // 退出后必须恢复真实光标，避免影响本机用户
         powerAssertion.stop()
     }
 }

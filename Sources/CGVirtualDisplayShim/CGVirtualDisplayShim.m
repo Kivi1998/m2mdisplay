@@ -1,13 +1,12 @@
 #import "include/CGVirtualDisplayShim.h"
 #import <Foundation/Foundation.h>
 
-// CGVirtualDisplay is a private CoreGraphics class with no public headers.
-// These interface declarations were reconstructed by introspecting the live
-// Objective-C runtime on this machine (macOS 26.5.2 / Xcode 26.6) via
-// class_copyMethodList / class_copyPropertyList — not guessed from memory —
-// so the selectors/signatures below are known to match this OS build.
-// The real implementation lives in CoreGraphics.framework at runtime; we're
-// only declaring the interface so the compiler can emit correct calls.
+// CGVirtualDisplay 是 CoreGraphics 私有类，没有公开头文件。
+// 下列接口声明通过 class_copyMethodList 和 class_copyPropertyList，
+// 从本机 macOS 26.5.2 / Xcode 26.6 的实时 Objective-C 运行时反省得到，
+// 并非依靠记忆猜测，因此选择器和签名已确认与该系统版本匹配。
+// 真正实现位于运行时的 CoreGraphics.framework 中；这里只声明接口，
+// 使编译器能够生成正确调用。
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -58,8 +57,8 @@ M2MVirtualDisplayRef M2MCreateVirtualDisplay(const char *name,
     descriptor.maxPixelsWide = maxPixelWidth;
     descriptor.maxPixelsHigh = maxPixelHeight;
     descriptor.sizeInMillimeters = CGSizeMake(widthMM, heightMM);
-    descriptor.vendorID = 0x4D32; // "M2" — arbitrary, avoids colliding with real hardware vendor IDs
-    descriptor.productID = 0x4D44; // "MD"
+    descriptor.vendorID = 0x4D32; // “M2”，任意取值，用于避免与真实硬件厂商编号冲突
+    descriptor.productID = 0x4D44; // 使用“M2M Display”首字母“MD”
     descriptor.serialNum = 0x00000001;
     descriptor.queue = dispatch_queue_create("com.m2mdisplay.virtualdisplay", DISPATCH_QUEUE_SERIAL);
     descriptor.terminationHandler = ^(id display, CGDirectDisplayID displayID) {
@@ -75,8 +74,8 @@ M2MVirtualDisplayRef M2MCreateVirtualDisplay(const char *name,
                                                                        height:logicalHeight
                                                                   refreshRate:refreshRate];
     CGVirtualDisplaySettings *settings = [[CGVirtualDisplaySettings alloc] init];
-    // Register this as a Retina/HiDPI mode. The descriptor advertises the
-    // backing-pixel ceiling while the mode reports the point-sized desktop.
+    // 注册为 Retina/HiDPI 模式。描述符声明后备像素上限，
+    // 显示模式则报告以点为单位的桌面尺寸。
     settings.hiDPI = 1;
     settings.modes = @[mode];
 
@@ -89,8 +88,8 @@ M2MVirtualDisplayRef M2MCreateVirtualDisplay(const char *name,
         *displayIDOut = display.displayID;
     }
 
-    // Hand ownership to the caller as a +1 retained opaque pointer; released in
-    // M2MDestroyVirtualDisplay via CFBridgingRelease.
+    // 以持有计数加一的不透明指针形式把所有权交给调用方；
+    // 随后由 M2MDestroyVirtualDisplay 通过 CFBridgingRelease 释放。
     return (M2MVirtualDisplayRef)CFBridgingRetain(display);
 }
 

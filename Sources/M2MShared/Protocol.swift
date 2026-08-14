@@ -1,13 +1,13 @@
 import Foundation
 
-/// Cursor channel: fixed-size binary packet over UDP. Deliberately unreliable —
-/// only the latest position matters, so we never want to queue behind an old one.
+/// 光标通道：通过 UDP 发送固定长度的二进制数据包。
+/// 此处有意不保证可靠传输，因为只有最新位置有意义，不能让新位置排在旧位置之后等待。
 public struct CursorPacket {
     public var x: Float32
     public var y: Float32
     public var cursorType: UInt8
     public var sequence: UInt32
-    public var isVisible: Bool // false = cursor left the virtual display, receiver should hide its overlay
+    public var isVisible: Bool // false 表示光标已离开虚拟显示器，接收端应隐藏叠加光标
 
     public init(x: Float32, y: Float32, cursorType: UInt8, sequence: UInt32, isVisible: Bool = true) {
         self.x = x
@@ -20,13 +20,12 @@ public struct CursorPacket {
     public static let byteSize = MemoryLayout<Float32>.size * 2 + MemoryLayout<UInt8>.size + MemoryLayout<UInt32>.size + MemoryLayout<UInt8>.size
 
     public func encoded() -> Data {
-        // Manual byte-by-byte packing — NOT a raw struct memory copy. Swift inserts
-        // 3 bytes of alignment padding between `cursorType` (UInt8) and `sequence`
-        // (UInt32), so `Data(bytes: &self, count:)` silently truncates the real
-        // sequence bytes and decode() reads padding zeros instead. Bit us once
-        // (decoded sequence numbers came out as exact multiples of 2^24 — the
-        // signature of reading padding bytes as the high bytes of a little-endian
-        // UInt32). Pack explicitly so encode/decode share one unambiguous layout.
+        // 必须逐字节手工打包，不能直接复制结构体内存。Swift 会在 `cursorType`
+        //（UInt8）与 `sequence`（UInt32）之间插入 3 字节对齐填充；若使用
+        // `Data(bytes: &self, count:)`，真实序列号字节会被静默截断，decode()
+        // 读到的反而是填充零。这个问题曾导致解码后的序列号总是 2^24 的整数倍，
+        // 正是把填充字节当作小端 UInt32 高位读取的典型表现。显式打包可确保
+        // 编码和解码共享唯一、明确的字节布局。
         var data = Data(capacity: Self.byteSize)
         var xv = x
         var yv = y
@@ -63,12 +62,12 @@ public enum CursorType: UInt8 {
     case other = 255
 }
 
-/// Video channel: length-prefixed frames over TCP. Reliable/ordered is fine here —
-/// the Thunderbolt Bridge link is effectively lossless, so we don't pay AirPlay's
-/// price of a jitter buffer sized for Wi-Fi loss recovery.
+/// 视频通道：通过 TCP 发送带长度前缀的视频帧。这里适合使用可靠、有序传输。
+/// 雷雳桥接链路实际上几乎不会丢包，因此不需要像 AirPlay 那样为无线网络丢包恢复
+/// 配置较大的抖动缓冲区。
 public struct FrameHeader {
     public var payloadLength: UInt32
-    public var avcCLength: UInt16   // > 0 only on keyframes carrying fresh SPS/PPS
+    public var avcCLength: UInt16   // 关键帧携带 VPS、SPS 和 PPS 配置时大于零
     public var presentationTimeNanos: UInt64
     public var isKeyframe: Bool
 
@@ -106,10 +105,9 @@ public struct FrameHeader {
     }
 }
 
-/// Sent receiver -> sender the instant a cursor position has actually been
-/// rendered (not just received) — lets the sender measure real end-to-end
-/// "mouse moved -> pixel on screen" latency using its own single clock (no
-/// cross-machine clock sync needed, since it's a round trip).
+/// 接收端在主线程提交光标图层位置更新后发回发送端，而不是刚收到网络数据时发送。
+/// 发送端可使用自己的单机时钟测量“鼠标移动 → 屏幕像素变化”的真实端到端延迟。
+/// 因为测量的是往返时间，所以无需同步两台机器的时钟。
 public struct AckPacket {
     public var sequence: UInt32
 

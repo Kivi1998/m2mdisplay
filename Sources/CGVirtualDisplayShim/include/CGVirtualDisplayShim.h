@@ -9,19 +9,19 @@
 extern "C" {
 #endif
 
-/// Opaque, retained handle to a live CGVirtualDisplay. Keep it alive for as long
-/// as the display should exist; releasing it (M2MDestroyVirtualDisplay) tears
-/// the display down.
+/// 指向活动 CGVirtualDisplay 的不透明持有句柄。
+/// 显示器需要存在多久，就必须持有多久；调用 M2MDestroyVirtualDisplay 释放后，
+/// 虚拟显示器会被销毁。
 typedef void *M2MVirtualDisplayRef;
 
-/// Creates and activates a virtual display. Returns NULL on failure.
-/// logicalWidth/logicalHeight control the visible desktop size.
-/// maxPixelWidth/maxPixelHeight control the Retina backing-pixel ceiling. The
-/// shim enables HiDPI, so 1920x1080 logical points can be drawn with a
-/// 3840x2160 backing store without shrinking text or windows.
-/// widthMM/heightMM are the physical size CoreGraphics reports (affects default
-/// point scaling), refreshRate in Hz. displayIDOut receives the CGDirectDisplayID
-/// that ScreenCaptureKit / system_profiler will see.
+/// 创建并激活虚拟显示器，失败时返回 NULL。
+/// logicalWidth/logicalHeight 控制可见桌面尺寸。
+/// maxPixelWidth/maxPixelHeight 控制 Retina 后备像素上限。
+/// 此适配层会启用 HiDPI，因此可使用 3840×2160 后备缓冲绘制 1920×1080 逻辑点，
+/// 而不会缩小文字或窗口。
+/// widthMM/heightMM 是 CoreGraphics 报告的物理尺寸，会影响默认点缩放；
+/// refreshRate 的单位为赫兹。displayIDOut 接收 ScreenCaptureKit 和
+/// system_profiler 可识别的 CGDirectDisplayID。
 M2MVirtualDisplayRef M2MCreateVirtualDisplay(const char *name,
                                               uint32_t logicalWidth,
                                               uint32_t logicalHeight,
@@ -38,4 +38,4 @@ void M2MDestroyVirtualDisplay(M2MVirtualDisplayRef ref);
 }
 #endif
 
-#endif /* CGVirtualDisplayShim_h */
+#endif /* CGVirtualDisplayShim_h 结束 */

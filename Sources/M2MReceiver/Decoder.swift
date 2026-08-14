@@ -2,9 +2,8 @@ import CoreMedia
 import Foundation
 
 enum SampleBufferBuilder {
-    /// Rebuilds the format description from the hvcC (HEVCDecoderConfigurationRecord)
-    /// box the sender attaches to every keyframe — same technique VideoToolbox used
-    /// to produce it on the encode side, just in reverse.
+    /// 根据发送端随每个关键帧附带的 hvcC（HEVC 解码器配置记录）数据块，
+    /// 重新构建格式描述。其方法与 VideoToolbox 编码端生成该数据块的过程相反。
     static func formatDescription(width: Int, height: Int, avcC: Data) -> CMFormatDescription? {
         let extensions: [String: Any] = [
             "SampleDescriptionExtensionAtoms": ["hvcC": avcC]
@@ -22,10 +21,10 @@ enum SampleBufferBuilder {
         return formatDescription
     }
 
-    /// Wraps one AVCC (length-prefixed NAL units) payload into a CMSampleBuffer and
-    /// flags it for immediate display — skip AVSampleBufferDisplayLayer's normal
-    /// "wait until the timebase reaches this frame's PTS" pacing, since we want it
-    /// on screen the instant it's decoded, not scheduled against a clock.
+    /// 将一个 AVCC 载荷（带长度前缀的 NAL 单元）封装为 CMSampleBuffer，
+    /// 并标记为立即显示。这样可跳过 AVSampleBufferDisplayLayer 常规的
+    /// “等待时间基到达该帧 PTS”节奏控制，使画面在解码完成后立即上屏，
+    /// 而不是再等待时钟调度。
     static func sampleBuffer(payload: Data, formatDescription: CMFormatDescription) -> CMSampleBuffer? {
         var blockBuffer: CMBlockBuffer?
         let payloadCount = payload.count

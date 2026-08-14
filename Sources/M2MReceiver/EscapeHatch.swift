@@ -2,13 +2,10 @@ import CoreGraphics
 import Foundation
 import AppKit
 
-/// Triple-tap Escape to quit. This receiver's window sits at a level that
-/// visually covers everything else on screen (that's the whole point — it's
-/// supposed to look like a real monitor, not an app window) — which means
-/// there is otherwise no way back to whatever else was on this Mac's screen
-/// short of SSHing in and killing the process. Three presses within 2s is
-/// deliberately not a single Escape tap, so it doesn't fire from normal use
-/// of whatever's running underneath (a dialog being dismissed, etc.).
+/// 连按三次 Escape 退出。接收端窗口的层级会在视觉上覆盖屏幕中的其他内容，
+/// 这是为了让它看起来像真实显示器，而不是普通应用窗口。若没有该出口，
+/// 就只能通过 SSH 登录并终止进程，才能返回这台 Mac 原来的画面。
+/// 设计为 2 秒内连按三次，而不是按一次 Escape，避免在关闭对话框等正常操作中误触。
 final class EscapeHatch {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?

@@ -3,8 +3,8 @@ import CoreMedia
 import Foundation
 
 struct EncodedFrame {
-    let payload: Data      // AVCC length-prefixed NAL units
-    let avcC: Data?        // present on keyframes — SPS/PPS the decoder needs to (re)build its format description
+    let payload: Data      // AVCC 格式、带长度前缀的 NAL 单元
+    let avcC: Data?        // 关键帧尝试携带，包含重建格式描述所需的 VPS、SPS 和 PPS
     let isKeyframe: Bool
     let presentationTimeNanos: UInt64
 }
@@ -34,18 +34,17 @@ final class VideoEncoder {
             throw M2MError.encoderFailed(status)
         }
 
-        // Low-latency, interactive tuning: real-time pacing, no B-frames / reordering,
-        // aggressive keyframe interval so a dropped/late frame recovers fast.
+        // 面向低延迟交互场景调优：使用实时节奏，不启用 B 帧或帧重排，
+        // 并缩短关键帧间隔，以便丢帧或迟到帧出现后快速恢复。
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
-        // HEVC over H.264 — meaningfully better quality per bit for exactly the
-        // kind of content this pipeline carries (dense text, sharp UI edges),
-        // and Apple Silicon's media engine has native HEVC encode/decode, so
-        // this doesn't cost the real-time headroom that going to native 4.5K did.
+        // 选择 HEVC 而不是 H.264。对于密集文字和锐利界面边缘等本项目内容，
+        // HEVC 的单位码率画质明显更好。Apple 芯片媒体引擎原生支持 HEVC 编解码，
+        // 因此不会像直接提升到 4.5K 原生分辨率那样耗尽实时处理余量。
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: frameRate as CFNumber)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: averageBitrateBps as CFNumber)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (frameRate * 2) as CFNumber) // keyframe every ~2s
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (frameRate * 2) as CFNumber) // 约每 2 秒一个关键帧
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: 2.0 as CFNumber)
 
         VTCompressionSessionPrepareToEncodeFrames(session)
@@ -78,9 +77,8 @@ final class VideoEncoder {
 
         let isKeyframe = !(sampleBuffer.sampleAttachments.first?[.notSync] as? Bool ?? false)
 
-        // "hvcC" (HEVCDecoderConfigurationRecord) is HEVC's equivalent of H.264's
-        // "avcC" — same role (parameter sets the decoder needs), different atom
-        // name/format description key for this codec.
+        // “hvcC”（HEVC 解码器配置记录）相当于 H.264 的“avcC”。
+        // 两者都保存解码器所需参数集，只是此编解码器使用不同的数据块名称和格式描述键。
         var avcCData: Data?
         if isKeyframe, let formatDescription = sampleBuffer.formatDescription,
            let atoms = CMFormatDescriptionGetExtension(formatDescription, extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms) as? [String: Any],

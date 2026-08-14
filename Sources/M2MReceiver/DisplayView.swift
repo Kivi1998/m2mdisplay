@@ -23,10 +23,9 @@ final class DisplayView: NSView {
         guard let rootLayer = layer else { return }
         rootLayer.backgroundColor = NSColor.black.cgColor
 
-        // Manually-added sublayers default to 1x even inside a Retina window.
-        // Keep the 1920x1080 point-sized view while compositing into its
-        // 3840x2160 backing store, otherwise the decoded Retina frame is
-        // downsampled before macOS presents it on the iMac panel.
+        // 手工添加的子图层即使位于 Retina 窗口中，也会默认使用 1 倍比例。
+        // 视图使用 iMac 当前的逻辑屏幕尺寸，同时以窗口的 Retina 比例合成到后备缓冲区；
+        // 否则解码后的 Retina 帧会在 macOS 输出到 iMac 面板前被降采样。
         let scale = window?.backingScaleFactor ?? 2.0
         videoLayer.contentsScale = scale
         cursorLayer.contentsScale = scale
@@ -36,9 +35,8 @@ final class DisplayView: NSView {
         videoLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         rootLayer.addSublayer(videoLayer)
 
-        // The real system pointer bitmap, not a hand-drawn approximation —
-        // NSCursor.arrow.image is the actual asset AppKit ships, so this is
-        // pixel-for-pixel what the user's used to seeing everywhere else.
+        // 使用真实的系统指针位图，而不是手绘近似图形。
+        // NSCursor.arrow.image 是 AppKit 自带资源，与用户在其他位置看到的指针逐像素一致。
         let cursorImage = NSCursor.arrow.image
         let hotSpot = NSCursor.arrow.hotSpot
         var imageRect = CGRect(origin: .zero, size: cursorImage.size)
@@ -46,15 +44,11 @@ final class DisplayView: NSView {
             cursorLayer.contents = cgImage
         }
         cursorLayer.bounds = CGRect(origin: .zero, size: cursorImage.size)
-        // NSCursor.hotSpot is specified top-left-down (legacy from classic Mac OS
-        // cursor resources), while CALayer.anchorPoint's Y is bottom-left-up —
-        // flip the Y axis converting between them. Getting this backwards doesn't
-        // break cursor *tracking* (the reported position is correct either way)
-        // but it does put the rendered tip several points away from the real
-        // click point, which is exactly narrow enough to miss small targets like
-        // a tab's close button while looking "close enough" at a glance —
-        // that's what was actually being reported as "clicks land in the wrong
-        // place," not a tracking bug.
+        // NSCursor.hotSpot 使用左上角为原点、Y 轴向下的坐标系，这是经典 Mac OS
+        // 光标资源遗留的约定；CALayer.anchorPoint 的 Y 轴则从左下角向上。
+        // 两者转换时必须翻转 Y 轴。方向写反不会破坏光标跟踪，位置数据仍然正确，
+        // 但渲染出的指针尖端会偏离真实点击点数个点，足以错过标签页关闭按钮等小目标。
+        // 过去报告的“点击落点错误”实际由此引起，并不是跟踪逻辑的问题。
         cursorLayer.anchorPoint = CGPoint(x: hotSpot.x / cursorImage.size.width,
                                            y: 1 - hotSpot.y / cursorImage.size.height)
         cursorLayer.isHidden = true
@@ -62,11 +56,9 @@ final class DisplayView: NSView {
         rootLayer.addSublayer(cursorLayer)
     }
 
-    /// Updates cursor position in *normalized* (0...1, top-left origin, matching the
-    /// coordinate space the sender's mouse tap reports in) coordinates. Wrapped in a
-    /// no-implicit-animation transaction — this is the one path that must never
-    /// inherit any easing/duration, since any smoothing here directly reintroduces
-    /// the latency this whole project exists to remove.
+    /// 使用归一化坐标更新光标位置。坐标范围为 0...1，原点位于左上角，
+    /// 与发送端鼠标监听器上报的坐标系一致。整个操作关闭隐式动画；该路径不能继承
+    /// 任何缓动或动画时长，因为这里的平滑处理会重新引入本项目要消除的延迟。
     func updateCursor(normalizedX: CGFloat, normalizedY: CGFloat) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -80,10 +72,8 @@ final class DisplayView: NSView {
         CATransaction.commit()
     }
 
-    /// The cursor tap only reports position while the real cursor is over the
-    /// virtual display; once it moves back onto the MacBook's own screen this
-    /// hides the overlay instead of leaving it stuck at the last position it
-    /// saw at the edge.
+    /// 只有真实光标位于虚拟显示器上时，鼠标监听器才会上报位置。
+    /// 当光标移回 MacBook 自带屏幕时隐藏叠加光标，避免它停留在离开前的边缘位置。
     func hideCursor() {
         guard cursorVisible else { return }
         CATransaction.begin()
