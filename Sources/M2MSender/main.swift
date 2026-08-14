@@ -40,18 +40,14 @@ Task {
         let receiverHost = Endpoints.receiverHost
         print("Target receiver: \(receiverHost) (video:\(NetworkConfig.videoPort) cursor:\(NetworkConfig.cursorPort))")
 
-        // Tried the panel's true native 4480x2520 to chase the last bit of
-        // sharpness, but at sustained 60fps that's 36% more pixels than 4K and
-        // it started dropping frames/stuttering — a real regression against the
-        // actual bar ("better than AirPlay," which means smooth first). 4K
-        // (3840x2160) already fixed the original blur (matches the iMac's
-        // active "looks like 1920x1080" scaled resolution at a clean 2x) and
-        // ran smoothly; settling here rather than trading stability for the
-        // last increment of crispness.
+        // Keep the desktop's layout and text size at 1920x1080. backingScale=2
+        // only gives every logical point a 2x2 Retina pixel grid; it does not
+        // make windows or text smaller.
         guard let virtualDisplay = VirtualDisplay(
             name: "M2M Display",
-            width: 1920,
-            height: 1080,
+            logicalWidth: 1920,
+            logicalHeight: 1080,
+            backingScale: 2,
             refreshRate: 60,
             widthMM: 508,
             heightMM: 285
@@ -60,15 +56,15 @@ Task {
             exit(1)
         }
         keepAliveVirtualDisplay = virtualDisplay
-        print("Created virtual display, CGDirectDisplayID = \(virtualDisplay.displayID), requested \(virtualDisplay.width)x\(virtualDisplay.height)")
+        print("Created virtual display, CGDirectDisplayID = \(virtualDisplay.displayID), looks like \(virtualDisplay.logicalWidth)x\(virtualDisplay.logicalHeight), backing pixels \(virtualDisplay.pixelWidth)x\(virtualDisplay.pixelHeight)")
 
-        let capturer = FrameCapturer(displayID: virtualDisplay.displayID, width: virtualDisplay.width, height: virtualDisplay.height)
+        let capturer = FrameCapturer(displayID: virtualDisplay.displayID, width: virtualDisplay.pixelWidth, height: virtualDisplay.pixelHeight)
         keepAliveCapturer = capturer
         // 10Mbps looked visibly blurry for 1080p60 desktop content (dense text,
         // sharp UI edges compress far worse than natural video) — bumped way up
         // since the Thunderbolt Bridge link has tens of Gbps to spare and was
         // never remotely close to the bottleneck.
-        let encoder = try VideoEncoder(width: virtualDisplay.width, height: virtualDisplay.height, frameRate: 60, averageBitrateBps: 60_000_000)
+        let encoder = try VideoEncoder(width: virtualDisplay.pixelWidth, height: virtualDisplay.pixelHeight, frameRate: 60, averageBitrateBps: 60_000_000)
         keepAliveEncoder = encoder
         let videoSender = VideoSender(host: receiverHost, port: NetworkConfig.videoPort)
         keepAliveVideoSender = videoSender
@@ -113,7 +109,7 @@ Task {
         var cursorSeq: UInt32 = 0
         var sentAt: [UInt32: CFAbsoluteTime] = [:]
         var latenciesMs: [Double] = []
-        let mouseTap = MouseTap(virtualDisplayID: virtualDisplay.displayID, width: virtualDisplay.width, height: virtualDisplay.height)
+        let mouseTap = MouseTap(virtualDisplayID: virtualDisplay.displayID, width: virtualDisplay.logicalWidth, height: virtualDisplay.logicalHeight)
         keepAliveMouseTap = mouseTap
         mouseTap.onPosition = { x, y, isVisible in
             cursorSeq += 1

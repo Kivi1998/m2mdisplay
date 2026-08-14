@@ -23,6 +23,14 @@ final class DisplayView: NSView {
         guard let rootLayer = layer else { return }
         rootLayer.backgroundColor = NSColor.black.cgColor
 
+        // Manually-added sublayers default to 1x even inside a Retina window.
+        // Keep the 1920x1080 point-sized view while compositing into its
+        // 3840x2160 backing store, otherwise the decoded Retina frame is
+        // downsampled before macOS presents it on the iMac panel.
+        let scale = window?.backingScaleFactor ?? 2.0
+        videoLayer.contentsScale = scale
+        cursorLayer.contentsScale = scale
+
         videoLayer.videoGravity = .resize
         videoLayer.frame = rootLayer.bounds
         videoLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
@@ -102,6 +110,13 @@ final class DisplayView: NSView {
     override func layout() {
         super.layout()
         videoLayer.frame = layer?.bounds ?? .zero
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let scale = window?.backingScaleFactor else { return }
+        videoLayer.contentsScale = scale
+        cursorLayer.contentsScale = scale
     }
 
 }

@@ -45,16 +45,18 @@ NS_ASSUME_NONNULL_BEGIN
 NS_ASSUME_NONNULL_END
 
 M2MVirtualDisplayRef M2MCreateVirtualDisplay(const char *name,
-                                              uint32_t widthPx,
-                                              uint32_t heightPx,
+                                              uint32_t logicalWidth,
+                                              uint32_t logicalHeight,
+                                              uint32_t maxPixelWidth,
+                                              uint32_t maxPixelHeight,
                                               double refreshRate,
                                               uint32_t widthMM,
                                               uint32_t heightMM,
                                               uint32_t *displayIDOut) {
     CGVirtualDisplayDescriptor *descriptor = [[CGVirtualDisplayDescriptor alloc] init];
     descriptor.name = [NSString stringWithUTF8String:name];
-    descriptor.maxPixelsWide = widthPx;
-    descriptor.maxPixelsHigh = heightPx;
+    descriptor.maxPixelsWide = maxPixelWidth;
+    descriptor.maxPixelsHigh = maxPixelHeight;
     descriptor.sizeInMillimeters = CGSizeMake(widthMM, heightMM);
     descriptor.vendorID = 0x4D32; // "M2" — arbitrary, avoids colliding with real hardware vendor IDs
     descriptor.productID = 0x4D44; // "MD"
@@ -69,11 +71,13 @@ M2MVirtualDisplayRef M2MCreateVirtualDisplay(const char *name,
         return NULL;
     }
 
-    CGVirtualDisplayMode *mode = [[CGVirtualDisplayMode alloc] initWithWidth:widthPx
-                                                                       height:heightPx
+    CGVirtualDisplayMode *mode = [[CGVirtualDisplayMode alloc] initWithWidth:logicalWidth
+                                                                       height:logicalHeight
                                                                   refreshRate:refreshRate];
     CGVirtualDisplaySettings *settings = [[CGVirtualDisplaySettings alloc] init];
-    settings.hiDPI = 0;
+    // Register this as a Retina/HiDPI mode. The descriptor advertises the
+    // backing-pixel ceiling while the mode reports the point-sized desktop.
+    settings.hiDPI = 1;
     settings.modes = @[mode];
 
     BOOL ok = [display applySettings:settings];

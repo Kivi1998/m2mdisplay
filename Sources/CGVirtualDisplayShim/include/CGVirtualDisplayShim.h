@@ -15,13 +15,18 @@ extern "C" {
 typedef void *M2MVirtualDisplayRef;
 
 /// Creates and activates a virtual display. Returns NULL on failure.
-/// widthPx/heightPx are the pixel-resolution mode registered with the display;
+/// logicalWidth/logicalHeight control the visible desktop size.
+/// maxPixelWidth/maxPixelHeight control the Retina backing-pixel ceiling. The
+/// shim enables HiDPI, so 1920x1080 logical points can be drawn with a
+/// 3840x2160 backing store without shrinking text or windows.
 /// widthMM/heightMM are the physical size CoreGraphics reports (affects default
 /// point scaling), refreshRate in Hz. displayIDOut receives the CGDirectDisplayID
 /// that ScreenCaptureKit / system_profiler will see.
 M2MVirtualDisplayRef M2MCreateVirtualDisplay(const char *name,
-                                              uint32_t widthPx,
-                                              uint32_t heightPx,
+                                              uint32_t logicalWidth,
+                                              uint32_t logicalHeight,
+                                              uint32_t maxPixelWidth,
+                                              uint32_t maxPixelHeight,
                                               double refreshRate,
                                               uint32_t widthMM,
                                               uint32_t heightMM,
