@@ -50,8 +50,8 @@ Task {
         // last increment of crispness.
         guard let virtualDisplay = VirtualDisplay(
             name: "M2M Display",
-            width: 3840,
-            height: 2160,
+            width: 1920,
+            height: 1080,
             refreshRate: 60,
             widthMM: 508,
             heightMM: 285

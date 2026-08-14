@@ -20,8 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     //  - the video format description needs the actual encoded *pixel* size
     private var cursorSpaceWidth = 1920
     private var cursorSpaceHeight = 1080
-    private var videoPixelWidth = 3840
-    private var videoPixelHeight = 2160
+    private var videoPixelWidth = 1920
+    private var videoPixelHeight = 1080
     private let escapeHatch = EscapeHatch()
     private let powerAssertion = PowerAssertion()
     private var cursorHideTimer: DispatchSourceTimer?
