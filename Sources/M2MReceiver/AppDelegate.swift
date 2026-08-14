@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var videoPixelHeight = 2160
     private let escapeHatch = EscapeHatch()
     private let powerAssertion = PowerAssertion()
+    private var cursorHideTimer: DispatchSourceTimer?
 
     /// NSScreen.main is whatever the system currently considers its main display,
     /// which can be a *virtual* screen (Sidecar/AirPlay/another instance of this
@@ -85,8 +86,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // works regardless of which app has focus; explicitly paired with
         // CGDisplayShowCursor on quit so a real local user isn't left with an
         // invisible pointer if they ever do sit down at this Mac.
-        CGDisplayHideCursor(physicalDisplayID())
-        print("[M2MReceiver] hid this Mac's own cursor")
+        //
+        // A single hide-on-launch call reportedly doesn't stick — macOS re-shows
+        // the real cursor on its own after some system event (display
+        // reconfiguration, a window server hiccup, etc.), a known quirk with
+        // CGDisplayHideCursor in other full-screen/kiosk apps. Re-asserting on a
+        // timer is the standard workaround — but Hide/Show are refcounted per
+        // Apple's docs, so blindly calling Hide on every tick would leave it
+        // needing dozens of matching Show calls to undo, and a single Show on
+        // quit would leave the real cursor stuck invisible forever. Each tick
+        // pairs Show+Hide (net refcount change: zero) purely to force a fresh
+        // redraw, so the hide depth never drifts from the original single Hide().
+        let hideResult = CGDisplayHideCursor(physicalDisplayID())
+        print("[M2MReceiver] hid this Mac's own cursor (result: \(hideResult.rawValue))")
+        let cursorHideTimer = DispatchSource.makeTimerSource(queue: .main)
+        cursorHideTimer.schedule(deadline: .now() + 2, repeating: 2)
+        cursorHideTimer.setEventHandler { [weak self] in
+            guard let self else { return }
+            let id = self.physicalDisplayID()
+            CGDisplayShowCursor(id)
+            CGDisplayHideCursor(id)
+        }
+        cursorHideTimer.resume()
+        self.cursorHideTimer = cursorHideTimer
 
         if escapeHatch.start() {
             print("[M2MReceiver] escape hatch armed — triple-tap Escape to quit")

@@ -37,11 +37,14 @@ Task {
         let receiverHost = Endpoints.receiverHost
         print("Target receiver: \(receiverHost) (video:\(NetworkConfig.videoPort) cursor:\(NetworkConfig.cursorPort))")
 
-        // 1920x1080 source pixels stretched to fill a Retina iMac's screen (2x
-        // backing scale — 1920x1080 *points*, but ~3840x2160 physical pixels)
-        // is inherently a 2x upscale, which reads as blur no matter the H.264
-        // bitrate — there's just not enough real pixel detail in the source.
-        // Matching the iMac's actual physical pixel count removes the upscale.
+        // Tried the panel's true native 4480x2520 to chase the last bit of
+        // sharpness, but at sustained 60fps that's 36% more pixels than 4K and
+        // it started dropping frames/stuttering — a real regression against the
+        // actual bar ("better than AirPlay," which means smooth first). 4K
+        // (3840x2160) already fixed the original blur (matches the iMac's
+        // active "looks like 1920x1080" scaled resolution at a clean 2x) and
+        // ran smoothly; settling here rather than trading stability for the
+        // last increment of crispness.
         guard let virtualDisplay = VirtualDisplay(
             name: "M2M Display",
             width: 3840,
