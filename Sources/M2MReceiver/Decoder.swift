@@ -2,17 +2,17 @@ import CoreMedia
 import Foundation
 
 enum SampleBufferBuilder {
-    /// Rebuilds the format description from the avcC (AVCDecoderConfigurationRecord)
+    /// Rebuilds the format description from the hvcC (HEVCDecoderConfigurationRecord)
     /// box the sender attaches to every keyframe — same technique VideoToolbox used
     /// to produce it on the encode side, just in reverse.
     static func formatDescription(width: Int, height: Int, avcC: Data) -> CMFormatDescription? {
         let extensions: [String: Any] = [
-            "SampleDescriptionExtensionAtoms": ["avcC": avcC]
+            "SampleDescriptionExtensionAtoms": ["hvcC": avcC]
         ]
         var formatDescription: CMFormatDescription?
         let status = CMVideoFormatDescriptionCreate(
             allocator: nil,
-            codecType: kCMVideoCodecType_H264,
+            codecType: kCMVideoCodecType_HEVC,
             width: Int32(width),
             height: Int32(height),
             extensions: extensions as CFDictionary,

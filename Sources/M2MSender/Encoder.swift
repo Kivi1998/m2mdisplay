@@ -22,7 +22,7 @@ final class VideoEncoder {
             allocator: nil,
             width: Int32(width),
             height: Int32(height),
-            codecType: kCMVideoCodecType_H264,
+            codecType: kCMVideoCodecType_HEVC,
             encoderSpecification: encoderSpec as CFDictionary,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
@@ -38,10 +38,11 @@ final class VideoEncoder {
         // aggressive keyframe interval so a dropped/late frame recovers fast.
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
-        // High profile over Main — better quality per bit, which matters more
-        // than usual here since screen content (text, sharp UI edges) is much
-        // harder to compress cleanly than natural video.
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
+        // HEVC over H.264 — meaningfully better quality per bit for exactly the
+        // kind of content this pipeline carries (dense text, sharp UI edges),
+        // and Apple Silicon's media engine has native HEVC encode/decode, so
+        // this doesn't cost the real-time headroom that going to native 4.5K did.
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: frameRate as CFNumber)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: averageBitrateBps as CFNumber)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (frameRate * 2) as CFNumber) // keyframe every ~2s
@@ -77,11 +78,14 @@ final class VideoEncoder {
 
         let isKeyframe = !(sampleBuffer.sampleAttachments.first?[.notSync] as? Bool ?? false)
 
+        // "hvcC" (HEVCDecoderConfigurationRecord) is HEVC's equivalent of H.264's
+        // "avcC" — same role (parameter sets the decoder needs), different atom
+        // name/format description key for this codec.
         var avcCData: Data?
         if isKeyframe, let formatDescription = sampleBuffer.formatDescription,
            let atoms = CMFormatDescriptionGetExtension(formatDescription, extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms) as? [String: Any],
-           let avcC = atoms["avcC"] as? Data {
-            avcCData = avcC
+           let hvcC = atoms["hvcC"] as? Data {
+            avcCData = hvcC
         }
 
         let ptsNanos = UInt64(max(0, pts.seconds) * 1_000_000_000)

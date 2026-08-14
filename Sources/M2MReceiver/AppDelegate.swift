@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let escapeHatch = EscapeHatch()
     private let powerAssertion = PowerAssertion()
     private var cursorHideTimer: DispatchSourceTimer?
+    private let ackSender = AckSender(host: Endpoints.senderHost, port: NetworkConfig.ackPort)
 
     /// NSScreen.main is whatever the system currently considers its main display,
     /// which can be a *virtual* screen (Sidecar/AirPlay/another instance of this
@@ -142,6 +143,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     self.displayView.hideCursor()
                 }
+                // Ack fires the instant the position is actually on screen, not
+                // just received — this is the honest "mouse moved -> pixel
+                // changed" latency measurement point.
+                self.ackSender.send(AckPacket(sequence: packet.sequence))
             }
         }
 

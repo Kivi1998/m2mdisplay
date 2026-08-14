@@ -10,4 +10,5 @@ public enum NetworkConfig {
 
     public static let videoPort: UInt16 = 51230
     public static let cursorPort: UInt16 = 51231
+    public static let ackPort: UInt16 = 51232 // receiver -> sender, "this cursor position was just rendered"
 }

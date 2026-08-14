@@ -105,3 +105,29 @@ public struct FrameHeader {
         }
     }
 }
+
+/// Sent receiver -> sender the instant a cursor position has actually been
+/// rendered (not just received) — lets the sender measure real end-to-end
+/// "mouse moved -> pixel on screen" latency using its own single clock (no
+/// cross-machine clock sync needed, since it's a round trip).
+public struct AckPacket {
+    public var sequence: UInt32
+
+    public init(sequence: UInt32) {
+        self.sequence = sequence
+    }
+
+    public static let byteSize = MemoryLayout<UInt32>.size
+
+    public func encoded() -> Data {
+        var seq = sequence
+        return Data(bytes: &seq, count: Self.byteSize)
+    }
+
+    public static func decode(_ data: Data) -> AckPacket? {
+        guard data.count >= byteSize else { return nil }
+        return data.withUnsafeBytes { raw -> AckPacket in
+            AckPacket(sequence: raw.loadUnaligned(fromByteOffset: 0, as: UInt32.self))
+        }
+    }
+}
