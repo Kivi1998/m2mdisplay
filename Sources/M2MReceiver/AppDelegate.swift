@@ -3,6 +3,11 @@ import CoreGraphics
 import CoreMedia
 import M2MShared
 
+private final class ReceiverWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
     private var displayView: DisplayView!
@@ -21,7 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var videoPixelHeight = 2160
     private let escapeHatch = EscapeHatch()
     private let powerAssertion = PowerAssertion()
-    private var cursorHideTimer: DispatchSourceTimer?
+    private var immersiveModeEnabled = false
+    private var nativeCursorHidden = false
     private let ackSender = AckSender(host: Endpoints.senderHost, port: NetworkConfig.ackPort)
 
     /// NSScreen.main 返回系统当前认定的主显示器，它可能是虚拟屏幕，例如 Sidecar、
@@ -39,27 +45,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return NSScreen.main ?? NSScreen.screens[0]
     }
 
-    private func physicalDisplayID() -> CGDirectDisplayID {
-        for screen in NSScreen.screens {
-            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
-            let displayID = CGDirectDisplayID(number.uint32Value)
-            if CGDisplayIsBuiltin(displayID) != 0 {
-                return displayID
-            }
-        }
-        return CGMainDisplayID()
-    }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         let screenFrame = physicalScreen().frame
-        window = NSWindow(contentRect: screenFrame, styleMask: [.borderless], backing: .buffered, defer: false)
-        // 窗口不再置于真实菜单栏之上。高于 .mainMenu 的层级虽然能遮住菜单栏，
-        // 避免出现双菜单栏，但也会使 Mission Control 和 Cmd+Tab 无法切出。
-        // 这曾造成真实事故：窗口完全覆盖正在使用的屏幕，除强制重启外没有可见返回方式。
-        // 使用 .floating 会保留双菜单栏这一外观问题，但 Mission Control、Cmd+Tab、
-        // Cmd+` 等 macOS 常规退出路径仍然有效。除非提供可靠的非视觉终止开关，
-        // 否则不得重新提高窗口层级；仅依赖用户看不到说明的快捷键并不可靠。
-        window.level = .floating
+        window = ReceiverWindow(contentRect: screenFrame, styleMask: [.borderless], backing: .buffered, defer: false)
+        // 先建立不依赖窗口可见性的退出通道，再进入覆盖菜单栏的展示模式。
+        // 如果应用内键盘监听意外创建失败，就保留普通浮动窗口，避免用户被锁在
+        // 无法退出的全屏画面中。
+        let escapeHatchReady = escapeHatch.start()
+        if escapeHatchReady {
+            immersiveModeEnabled = true
+            window.level = .screenSaver
+        } else {
+            window.level = .floating
+        }
         window.backgroundColor = .black
         window.isOpaque = true
         window.ignoresMouseEvents = true // 当前部署方式未连接本机输入设备，详见项目说明
@@ -68,37 +66,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         displayView.autoresizingMask = [.width, .height]
         window.contentView = displayView
         window.setFrame(screenFrame, display: true)
-        window.makeKeyAndOrderFront(nil)
         NSApp.setActivationPolicy(.accessory)
+        window.makeKeyAndOrderFront(nil)
 
-        // 当前环境没有连接本地输入设备，因此这台 Mac 的真实光标会停留在上次位置，
-        // 并叠在应用渲染的光标之上，形成两个箭头。这里进行全局隐藏，不受焦点应用影响；
-        // 退出时必须显式调用 CGDisplayShowCursor，避免本地用户以后使用这台 Mac 时
-        // 发现真实指针仍处于隐藏状态。
-        //
-        // 启动时只隐藏一次并不稳定。显示器重配置或窗口服务器短暂异常后，macOS 可能
-        // 自动重新显示真实光标，这是其他全屏或自助终端应用使用 CGDisplayHideCursor 时
-        // 也会遇到的系统特性。定时重新确认隐藏状态是常见解决办法，但 Apple 文档说明
-        // Hide/Show 使用引用计数；若每次定时器触发都盲目调用 Hide，退出时就需要同样次数
-        // 的 Show 才能恢复，单次 Show 会让光标永久不可见。因此每次触发都成对执行
-        // Show+Hide，引用计数净变化为零，只用于强制刷新，隐藏深度始终保持为初次 Hide。
-        let hideResult = CGDisplayHideCursor(physicalDisplayID())
-        print("[M2MReceiver] hid this Mac's own cursor (result: \(hideResult.rawValue))")
-        let cursorHideTimer = DispatchSource.makeTimerSource(queue: .main)
-        cursorHideTimer.schedule(deadline: .now() + 2, repeating: 2)
-        cursorHideTimer.setEventHandler { [weak self] in
-            guard let self else { return }
-            let id = self.physicalDisplayID()
-            CGDisplayShowCursor(id)
-            CGDisplayHideCursor(id)
-        }
-        cursorHideTimer.resume()
-        self.cursorHideTimer = cursorHideTimer
-
-        if escapeHatch.start() {
+        if escapeHatchReady {
             print("[M2MReceiver] escape hatch armed — triple-tap Escape to quit")
+            // hideMenuBar 必须与 hideDock 同时使用。保留进程切换与强制退出能力，
+            // 只隐藏接收画面不需要的系统界面，并关闭摇动鼠标放大光标的辅助行为。
+            NSApp.presentationOptions = [.hideDock, .hideMenuBar, .disableCursorLocationAssistance]
+            NSApp.activate(ignoringOtherApps: true)
+            window.orderFrontRegardless()
+            hideNativeCursorIfNeeded()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                print("[M2MReceiver] immersive mode active=\(NSApp.isActive) keyWindow=\(self.window.isKeyWindow) windowLevel=\(self.window.level.rawValue) presentationOptions=\(NSApp.currentSystemPresentationOptions.rawValue)")
+            }
         } else {
-            fputs("[M2MReceiver] WARNING: escape hatch failed to start (needs Accessibility permission) — this window will cover the whole screen with no keyboard way out until that's granted\n", stderr)
+            fputs("[M2MReceiver] WARNING: escape hatch failed to start — menu bar and native cursor will remain available so the receiver can still be exited safely\n", stderr)
         }
 
         if powerAssertion.start() {
@@ -168,8 +152,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if immersiveModeEnabled {
+            window.level = .screenSaver
+            window.orderFrontRegardless()
+        }
+        hideNativeCursorIfNeeded()
+    }
+
+    func applicationWillResignActive(_ notification: Notification) {
+        showNativeCursorIfNeeded()
+        window.level = .floating
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        CGDisplayShowCursor(physicalDisplayID()) // 退出后必须恢复真实光标，避免影响本机用户
+        showNativeCursorIfNeeded()
+        NSApp.presentationOptions = []
         powerAssertion.stop()
+    }
+
+    private func hideNativeCursorIfNeeded() {
+        guard immersiveModeEnabled, !nativeCursorHidden, NSApp.isActive else { return }
+        // Apple 文档说明 display 参数当前不起作用，但调用方通常必须是前台应用。
+        // 因此先激活接收端，再保持一次严格配对的隐藏计数，不能定时 Show/Hide 闪烁。
+        let result = CGDisplayHideCursor(CGMainDisplayID())
+        if result == .success {
+            nativeCursorHidden = true
+        }
+        print("[M2MReceiver] native cursor hidden: \(nativeCursorHidden) (result: \(result.rawValue))")
+    }
+
+    private func showNativeCursorIfNeeded() {
+        guard nativeCursorHidden else { return }
+        CGDisplayShowCursor(CGMainDisplayID())
+        nativeCursorHidden = false
     }
 }

@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 import AppKit
 
@@ -7,41 +6,33 @@ import AppKit
 /// 就只能通过 SSH 登录并终止进程，才能返回这台 Mac 原来的画面。
 /// 设计为 2 秒内连按三次，而不是按一次 Escape，避免在关闭对话框等正常操作中误触。
 final class EscapeHatch {
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    private var localMonitor: Any?
     private var pressTimestamps: [CFAbsoluteTime] = []
     private let requiredPresses = 3
     private let windowSeconds: CFAbsoluteTime = 2.0
-    private let escapeKeyCode: Int64 = 53
+    private let escapeKeyCode: UInt16 = 53
 
     func start() -> Bool {
-        let mask: CGEventMask = 1 << CGEventType.keyDown.rawValue
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .listenOnly,
-            eventsOfInterest: mask,
-            callback: { _, _, event, refcon in
-                guard let refcon else { return Unmanaged.passUnretained(event) }
-                let hatch = Unmanaged<EscapeHatch>.fromOpaque(refcon).takeUnretainedValue()
-                hatch.handle(event)
-                return Unmanaged.passUnretained(event)
-            },
-            userInfo: refcon
-        ) else {
-            return false
+        guard localMonitor == nil else { return true }
+        // 接收端会主动成为前台应用，因此使用应用内事件监听即可，不需要辅助功能权限。
+        // 忽略按键自动重复，必须由用户真正按下三次 Escape 才会退出。
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if !event.isARepeat {
+                self?.handle(keyCode: event.keyCode)
+            }
+            return event
         }
-        eventTap = tap
-        let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
-        runLoopSource = source
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-        return true
+        return localMonitor != nil
     }
 
-    private func handle(_ event: CGEvent) {
-        guard event.getIntegerValueField(.keyboardEventKeycode) == escapeKeyCode else { return }
+    deinit {
+        if let localMonitor {
+            NSEvent.removeMonitor(localMonitor)
+        }
+    }
+
+    private func handle(keyCode: UInt16) {
+        guard keyCode == escapeKeyCode else { return }
         let now = CFAbsoluteTimeGetCurrent()
         pressTimestamps.append(now)
         pressTimestamps.removeAll { now - $0 > windowSeconds }
