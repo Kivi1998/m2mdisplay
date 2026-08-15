@@ -33,10 +33,15 @@ let package = Package(
             dependencies: ["M2MSenderCore", "M2MShared"],
             path: "Sources/M2MSenderCLI"
         ),
-        .executableTarget(
-            name: "M2MReceiver",
+        .target(
+            name: "M2MReceiverCore",
             dependencies: ["M2MShared"],
-            path: "Sources/M2MReceiver"
+            path: "Sources/M2MReceiverCore"
+        ),
+        .executableTarget(
+            name: "M2MReceiverCLI",
+            dependencies: ["M2MReceiverCore", "M2MShared"],
+            path: "Sources/M2MReceiverCLI"
         ),
     ]
 )
