@@ -23,10 +23,15 @@ let package = Package(
                 .linkedFramework("Foundation"),
             ]
         ),
-        .executableTarget(
-            name: "M2MSender",
+        .target(
+            name: "M2MSenderCore",
             dependencies: ["M2MShared", "CGVirtualDisplayShim"],
-            path: "Sources/M2MSender"
+            path: "Sources/M2MSenderCore"
+        ),
+        .executableTarget(
+            name: "M2MSenderCLI",
+            dependencies: ["M2MSenderCore", "M2MShared"],
+            path: "Sources/M2MSenderCLI"
         ),
         .executableTarget(
             name: "M2MReceiver",
