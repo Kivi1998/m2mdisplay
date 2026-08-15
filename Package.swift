@@ -9,6 +9,11 @@ let package = Package(
             name: "M2MShared",
             path: "Sources/M2MShared"
         ),
+        .testTarget(
+            name: "M2MSharedTests",
+            dependencies: ["M2MShared"],
+            path: "Tests/M2MSharedTests"
+        ),
         .target(
             name: "CGVirtualDisplayShim",
             path: "Sources/CGVirtualDisplayShim",
