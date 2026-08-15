@@ -8,10 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         engine.onStateChange = { state in print("[ReceiverEngine] state: \(state)") }
         engine.prepareWindow()
-        engine.showCast() // 命令行版本保留"启动就立刻投屏"的旧行为
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    // 覆盖窗口隐藏后仍需保持网络监听，等待发送端下一次连接。
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationDidBecomeActive(_ notification: Notification) { engine.handleDidBecomeActive() }
     func applicationWillResignActive(_ notification: Notification) { engine.handleWillResignActive() }
     func applicationWillTerminate(_ notification: Notification) { engine.shutdown() }

@@ -38,6 +38,11 @@ let package = Package(
             dependencies: ["M2MShared"],
             path: "Sources/M2MReceiverCore"
         ),
+        .testTarget(
+            name: "M2MReceiverCoreTests",
+            dependencies: ["M2MReceiverCore"],
+            path: "Tests/M2MReceiverCoreTests"
+        ),
         .executableTarget(
             name: "M2MReceiverCLI",
             dependencies: ["M2MReceiverCore", "M2MShared"],

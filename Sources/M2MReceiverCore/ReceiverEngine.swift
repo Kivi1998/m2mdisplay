@@ -73,7 +73,20 @@ public final class ReceiverEngine {
             log.write(.warning, "退出开关启动失败——只能通过界面按钮或 SSH 隐藏投屏")
         }
 
-        videoReceiver.onConnected = { [weak self] in self?.log.write(.info, "发送端已连接") }
+        videoReceiver.onConnected = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.log.write(.info, "发送端已连接，自动显示投屏")
+                self.showCast()
+            }
+        }
+        videoReceiver.onDisconnected = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.log.write(.info, "发送端已断开，自动恢复 iMac 原生桌面")
+                self.hideCast()
+            }
+        }
         videoReceiver.onFrame = { [weak self] frame in self?.handle(frame) }
         cursorReceiver.onCursor = { [weak self] packet in self?.handleCursor(packet) }
 

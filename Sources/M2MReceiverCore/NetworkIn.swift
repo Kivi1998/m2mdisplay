@@ -14,6 +14,7 @@ final class VideoReceiver {
     private var buffer = Data()
     var onFrame: ((ReceivedFrame) -> Void)?
     var onConnected: (() -> Void)?
+    var onDisconnected: (() -> Void)?
 
     func start(port: UInt16) throws {
         let params = NWParameters.tcp
@@ -21,33 +22,57 @@ final class VideoReceiver {
         let listener = try NWListener(using: params, on: nwPort)
         listener.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
-            self.connection?.cancel()
-            self.buffer.removeAll()
+            let previousConnection = self.connection
             self.connection = conn
-            conn.stateUpdateHandler = { state in
-                if state == .ready { self.onConnected?() }
+            self.buffer.removeAll()
+            previousConnection?.stateUpdateHandler = nil
+            previousConnection?.cancel()
+            conn.stateUpdateHandler = { [weak self, weak conn] state in
+                guard let self, let conn, self.connection === conn else { return }
+                switch state {
+                case .ready:
+                    self.onConnected?()
+                case .failed, .cancelled:
+                    self.finishConnection(conn)
+                default:
+                    break
+                }
             }
             conn.start(queue: .main)
-            self.receiveMore()
+            self.receiveMore(on: conn)
         }
         listener.start(queue: .main)
         self.listener = listener
     }
 
-    private func receiveMore() {
-        connection?.receive(minimumIncompleteLength: 1, maximumLength: 262_144) { [weak self] data, _, isComplete, error in
+    private func receiveMore(on connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 262_144) { [weak self, weak connection] data, _, isComplete, error in
+            guard let connection else { return }
             guard let self else { return }
+            guard self.connection === connection else { return }
             if let data, !data.isEmpty {
                 self.buffer.append(data)
                 self.drainBuffer()
             }
             if let error {
                 fputs("VideoReceiver receive error: \(error)\n", stderr)
+                self.finishConnection(connection)
                 return
             }
-            if isComplete { return }
-            self.receiveMore()
+            if isComplete {
+                self.finishConnection(connection)
+                return
+            }
+            self.receiveMore(on: connection)
         }
+    }
+
+    private func finishConnection(_ finishedConnection: NWConnection) {
+        guard connection === finishedConnection else { return }
+        finishedConnection.stateUpdateHandler = nil
+        connection = nil
+        buffer.removeAll()
+        onDisconnected?()
     }
 
     private func drainBuffer() {
@@ -68,8 +93,13 @@ final class VideoReceiver {
     }
 
     func stop() {
-        connection?.cancel()
+        let activeConnection = connection
+        connection = nil
+        activeConnection?.stateUpdateHandler = nil
+        activeConnection?.cancel()
         listener?.cancel()
+        listener = nil
+        buffer.removeAll()
     }
 }
 
