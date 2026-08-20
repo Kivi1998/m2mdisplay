@@ -12,6 +12,7 @@ public enum NetworkConfig {
     public static let cursorPort: UInt16 = 51231
     public static let ackPort: UInt16 = 51232 // 接收端 → 发送端：该光标位置刚刚完成渲染
     public static let controlPort: UInt16 = 51233 // 两端互发正常退出请求
+    public static let audioPort: UInt16 = 51234 // 发送端 → 接收端：系统音频
 }
 
 /// 双机生命周期控制只经过固定的雷雳桥接网络。使用明确的版本标记，避免端口上
