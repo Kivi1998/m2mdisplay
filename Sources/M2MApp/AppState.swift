@@ -21,6 +21,9 @@ final class AppState: ObservableObject {
     private var receiverEngine: ReceiverEngine?
     private let maxEvents = 5
     private var didPrepareForTermination = false
+    private lazy var idleCastingGuard = IdleCastingGuard { [weak self] in
+        self?.handleIdleTimeout()
+    }
 
     init() {
         if let requestedRole = roleStore.roleFromLaunchArguments {
@@ -57,6 +60,7 @@ final class AppState: ObservableObject {
         receiverEngine = nil
         statusText = "未启动"
         isRunning = false
+        idleCastingGuard.stop()
         DispatchQueue.main.async { NSApp.setActivationPolicy(.accessory) }
         Task {
             await outgoingSender?.stop()
@@ -99,7 +103,21 @@ final class AppState: ObservableObject {
     private func applySenderState(_ state: SenderState) {
         statusText = "\(state)"
         isRunning = state == .running || state == .reconnecting
+        if isRunning {
+            idleCastingGuard.start()
+        } else {
+            idleCastingGuard.stop()
+        }
         pushEvent("发送端: \(state)")
+    }
+
+    /// 投屏期间检测到长时间无操作（见 IdleCastingGuard），自动停止投屏，
+    /// 让两台 Mac 都能恢复各自平时设置的息屏/屏保节奏，不至于亮一整晚。
+    private func handleIdleTimeout() {
+        guard role == .sender, isRunning, !isBusy else { return }
+        log.write(.info, "投屏期间检测到长时间无操作，自动停止投屏")
+        pushEvent("长时间无操作，已自动停止投屏")
+        stopCasting()
     }
 
     private func applyReceiverState(_ state: ReceiverState) {

@@ -34,7 +34,12 @@ Dock、菜单栏都隐藏掉。这个规则不是随便定的——已经因为�
   中保留"钉住），点 Dock 图标（不管是冷启动还是已经在跑时再点一次）都会走
   `ensureReceiverIsRunning()`/`AppState.init()` 里已有的逻辑，自动确认/启动
   iMac 接收端；接收端（iMac）角色不受影响，继续保持 Info.plist 里
-  `LSUIElement` 的默认无 Dock 图标状态。
+  `LSUIElement` 的默认无 Dock 图标状态。发送端投屏期间还会用
+  `IdleCastingGuard.swift` 监控系统级空闲时长（鼠标+键盘都没输入，跟屏保
+  判断"空闲"用的是同一套 `CGEventSourceSecondsSinceLastEventType` 机制），
+  默认超过 10 分钟自动停止投屏——不然只要还在投屏，接收端会一直申请电源
+  断言挡住 iMac 休眠（`PowerAssertion.swift`），用户忘记手动停止投屏就睡
+  觉了，两台 Mac 的屏幕会一直亮一整晚。
 - `M2MShared`：两端共用的协议定义（`CursorPacket`/`FrameHeader`/
   `AckPacket`）和持久化事件日志 `EventLog`（写到
   `~/Library/Logs/M2MDisplay/`）。
