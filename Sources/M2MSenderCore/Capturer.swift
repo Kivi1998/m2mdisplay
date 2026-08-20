@@ -25,19 +25,26 @@ final class FrameCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
 
         let filter = SCContentFilter(display: scDisplay, excludingWindows: [])
 
-        let config = SCStreamConfiguration()
-        config.width = width
-        config.height = height
-        config.showsCursor = false // 光标改由独立低延迟通道传输
-        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(frameRate))
-        config.queueDepth = 3
-        config.colorSpaceName = CGColorSpace.sRGB
+        let config = Self.makeConfiguration(width: width, height: height, frameRate: frameRate)
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "com.m2mdisplay.capture"))
         try await stream.startCapture()
         self.stream = stream
+    }
+
+    static func makeConfiguration(width: Int, height: Int, frameRate: Int) -> SCStreamConfiguration {
+        let config = SCStreamConfiguration()
+        config.width = width
+        config.height = height
+        config.showsCursor = false // 光标改由独立低延迟通道传输，不烤进视频帧——
+        // 视频帧要过编解码和网络，光标会跟着视频帧率一起卡；独立 UDP 通道不用等
+        // 视频管线，鼠标移动到画面更新之间能做到远低于 AirPlay 的延迟。
+        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(frameRate))
+        config.queueDepth = 3
+        config.colorSpaceName = CGColorSpace.sRGB
+        return config
     }
 
     func stop() async {

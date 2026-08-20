@@ -25,8 +25,8 @@ Dock、菜单栏都隐藏掉。这个规则不是随便定的——已经因为�
   监听全局鼠标位置，走一条独立的、不经编解码的 UDP 通道把光标坐标实时发
   过去——这条独立通道是延迟远低于 AirPlay 的核心原因。
 - `M2MReceiverCore` / `M2MReceiverCLI`：接收端。监听视频/光标端口，
-  VideoToolbox 硬解码后铺满整个物理屏幕显示，收到光标坐标后单独叠加渲染
-  一个箭头图层。
+  VideoToolbox 硬解码后铺满整个物理屏幕显示，收到光标坐标和类型后在独立
+  悬浮窗口（`CursorOverlayView`）里叠加渲染对应形状（箭头/手形/工字）。
 - `M2MApp`：SwiftUI 菜单栏图形界面，两台机器装同一个 App，启动时选角色，
   可以随时开始/停止投屏。用 `scripts/package-m2mapp.sh` 打包成真正的
   `.app`（SPM 不会自动做这件事）。
@@ -90,10 +90,23 @@ scripts/package-m2mapp.sh
   SPDisplaysDataType` 里能看到一个 "M2M Display" 条目一直 "Online: Yes"，
   怎么等都不消失。目前发现最有效的解决办法是 `sudo killall WindowServer`
   （需要用户自己在真实终端里输入密码执行，我这边的工具跑不了 sudo）。
-- **`NSCursor.arrow.image` 在这个项目的进程环境下不可靠**：读出来经常是
-  空图像（`size=(0,0)`，`cgImage(forProposedRect:)` 返回 `nil`），导致
-  接收端的叠加光标画不出来。已经改成 `DisplayView.swift` 里手绘一个箭头
-  形状，不要再改回依赖这个系统 API。
+- **`NSCursor.arrow`/`.iBeam` 这两个静态单例的 `.image` 在这个项目的进程
+  环境下不可靠**：读出来是空图像（`size=(0,0)`，0 张 representation），
+  哪怕是在有完整 `NSApplication` 主循环的正常 GUI App 进程里也一样（用
+  `M2MReceiverCLI` 验证过）。`.pointingHand`/`.resizeLeftRight`/
+  `.resizeUpDown` 这几个反而能正常读到位图，不确定原因，没深究。因此接收端
+  （`CursorOverlayView.swift`）三种光标都是手绘的（黑色填充 + 白色描边），
+  不要改回依赖这几个静态单例的 `.image`。
+  发送端识别"当前系统光标是哪种类型"用的是另一个 API——`NSCursor.
+  currentSystem`（跨进程读取 WindowServer 当前真实显示的光标，不同于只反映
+  本 App 光标矩形的 `.current`），它读到的位图是正常的，不受上面那个坑影响。
+  但它返回的对象跟 `.arrow`/`.iBeam`/`.pointingHand` 这些单例不是同一个实例，
+  不能用 `===` 身份比较来判断类型，只能靠位图尺寸 + 热点坐标做指纹匹配（见
+  `CursorClassifier.swift`）。这组指纹是在当前这台 MacBook Pro、当前这个
+  macOS 版本上实测出来的，换系统版本可能会变；指纹匹配不上时会安全退化成
+  箭头，不会渲染出错误形状或崩溃，但会退化成"看不出来是手形/工字"——如果
+  升级系统后发现手形/工字都不出现了，先怀疑这里，重新跑一遍
+  `CursorClassifier.swift` 顶部注释提到的采样方法拿新指纹。
 - **`.app` 打包后一秒左右自己退出**：如果 `.build/M2MApp.app` 和
   `/Applications/M2MApp.app` 共用同一个 `CFBundleIdentifier`（比如测试时
   直接 `open` 过 build 目录里那份），macOS 26 的 Control Center 会把

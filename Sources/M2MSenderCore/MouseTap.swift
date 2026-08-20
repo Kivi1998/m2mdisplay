@@ -1,5 +1,7 @@
+import AppKit
 import CoreGraphics
 import Foundation
+import M2MShared
 
 /// 定时读取真实鼠标光标，并在光标位于虚拟显示器上时上报位置。
 /// 这是 iMac 端光标能够即时响应的关键，详见 Protocol.swift 中 CursorPacket 的说明：
@@ -12,18 +14,22 @@ final class MouseTap {
     private var pollingTimer: DispatchSourceTimer?
     private let virtualDisplayID: CGDirectDisplayID
     private let displayBoundsProvider: () -> CGRect
+    private let cursorTypeProvider: () -> CursorType
     /// 每次光标离开虚拟显示器时，isVisible 只会发送一次 false。
     /// 接收端据此隐藏叠加光标，避免光标移回本机屏幕后仍停留在离开前的位置。
-    var onPosition: ((Float, Float, Bool) -> Void)?
+    var onPosition: ((Float, Float, CursorType, Bool) -> Void)?
     private var isInsideBounds = false
     private var lastReportedLocation: CGPoint?
+    private var lastReportedCursorType: CursorType?
 
     init(
         virtualDisplayID: CGDirectDisplayID,
-        displayBoundsProvider: (() -> CGRect)? = nil
+        displayBoundsProvider: (() -> CGRect)? = nil,
+        cursorTypeProvider: (() -> CursorType)? = nil
     ) {
         self.virtualDisplayID = virtualDisplayID
         self.displayBoundsProvider = displayBoundsProvider ?? { CGDisplayBounds(virtualDisplayID) }
+        self.cursorTypeProvider = cursorTypeProvider ?? CursorClassifier.currentType
     }
 
     func start() -> Bool {
@@ -39,34 +45,39 @@ final class MouseTap {
         return true
     }
 
-    /// 供轮询器和单元测试共用。相同坐标不会重复发包；进入、移动和离开虚拟屏时
-    /// 才产生状态变化，避免 120Hz 定时器制造无意义的网络流量。
+    /// 供轮询器和单元测试共用。相同坐标、相同光标类型不会重复发包；进入、移动、
+    /// 光标类型变化（比如原地悬停在链接上时才出现的手形）和离开虚拟屏时才产生
+    /// 状态变化，避免 120Hz 定时器制造无意义的网络流量。
     func process(location: CGPoint) {
         let displayBounds = displayBoundsProvider()
         guard displayBounds.contains(location) else {
             if isInsideBounds {
                 isInsideBounds = false
                 lastReportedLocation = nil
-                onPosition?(0, 0, false)
+                lastReportedCursorType = nil
+                onPosition?(0, 0, .arrow, false)
             }
             return
         }
-        guard !isInsideBounds || lastReportedLocation != location else { return }
+        let cursorType = cursorTypeProvider()
+        guard !isInsideBounds || lastReportedLocation != location || lastReportedCursorType != cursorType else { return }
         isInsideBounds = true
         lastReportedLocation = location
+        lastReportedCursorType = cursorType
         let relX = Float(location.x - displayBounds.origin.x)
         let relY = Float(location.y - displayBounds.origin.y)
-        onPosition?(relX, relY, true)
+        onPosition?(relX, relY, cursorType, true)
     }
 
     func stop() {
         if isInsideBounds {
             isInsideBounds = false
-            onPosition?(0, 0, false)
+            onPosition?(0, 0, .arrow, false)
         }
         pollingTimer?.setEventHandler {}
         pollingTimer?.cancel()
         pollingTimer = nil
         lastReportedLocation = nil
+        lastReportedCursorType = nil
     }
 }

@@ -16,6 +16,41 @@ private final class ReceiverWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
+/// 只管理 iMac 本机光标的隐藏计数。实际光标由发送端 ScreenCaptureKit 合成到
+/// 视频帧中；这里必须避免 iMac 自己的箭头叠在远端光标上形成“双光标”。
+final class NativeCursorController {
+    private let displayID: CGDirectDisplayID
+    private let hideCursor: (CGDirectDisplayID) -> CGError
+    private let showCursor: (CGDirectDisplayID) -> CGError
+    private(set) var didHideCursor = false
+
+    init(
+        displayID: CGDirectDisplayID,
+        hideCursor: @escaping (CGDirectDisplayID) -> CGError = { CGDisplayHideCursor($0) },
+        showCursor: @escaping (CGDirectDisplayID) -> CGError = { CGDisplayShowCursor($0) }
+    ) {
+        self.displayID = displayID
+        self.hideCursor = hideCursor
+        self.showCursor = showCursor
+    }
+
+    @discardableResult
+    func hideIfNeeded() -> CGError {
+        guard !didHideCursor else { return .success }
+        let result = hideCursor(displayID)
+        if result == .success { didHideCursor = true }
+        return result
+    }
+
+    @discardableResult
+    func restoreIfNeeded() -> CGError {
+        guard didHideCursor else { return .success }
+        let result = showCursor(displayID)
+        if result == .success { didHideCursor = false }
+        return result
+    }
+}
+
 /// 掌管接收端的覆盖窗口和网络监听。是否投屏是独立的开关（showCast()/hideCast()），
 /// 跟窗口/监听器本身（prepareWindow()）分开——窗口只创建一次，默认隐藏，网络监听器
 /// 在隐藏/显示之间切换时始终保持存活，这样重新打开投屏不需要发送端重新连接。
@@ -32,6 +67,7 @@ public final class ReceiverEngine {
     private var displayView: DisplayView!
     private var cursorWindow: NSWindow!
     private var cursorOverlayView: CursorOverlayView!
+    private var nativeCursorController: NativeCursorController!
     private let videoReceiver = VideoReceiver()
     private let cursorReceiver = CursorReceiver()
     private var formatDescription: CMFormatDescription?
@@ -42,7 +78,6 @@ public final class ReceiverEngine {
     private let escapeHatch = EscapeHatch()
     private let powerAssertion = PowerAssertion()
     private var immersiveModeEnabled = false
-    private var nativeCursorHidden = false
     private var isCasting = false
     private var waitingForFirstFrame = false
     private var ackSender: AckSender?
@@ -57,9 +92,18 @@ public final class ReceiverEngine {
         return NSScreen.main ?? NSScreen.screens[0]
     }
 
+    private func displayID(for screen: NSScreen) -> CGDirectDisplayID {
+        guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return CGMainDisplayID()
+        }
+        return CGDirectDisplayID(number.uint32Value)
+    }
+
     /// 创建（初始隐藏的）覆盖窗口，并开始监听发送端的连接。App 启动时调用一次即可。
     public func prepareWindow() {
-        let screenFrame = physicalScreen().frame
+        let screen = physicalScreen()
+        let screenFrame = screen.frame
+        nativeCursorController = NativeCursorController(displayID: displayID(for: screen))
         window = ReceiverWindow(contentRect: screenFrame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.backgroundColor = .black
         window.isOpaque = true
@@ -188,9 +232,9 @@ public final class ReceiverEngine {
 
     public func handleWillResignActive() {
         guard window != nil, immersiveModeEnabled else { return }
-        showNativeCursorIfNeeded()
-        window.level = .floating
-        cursorWindow.orderOut(nil)
+        // 投屏仍在运行时失去激活状态不能恢复 iMac 光标；真正恢复只允许发生在
+        // hideCast() 或 shutdown()，否则系统界面切换会产生第二个箭头。
+        hideNativeCursorIfNeeded()
     }
 
     public func shutdown() {
@@ -226,28 +270,31 @@ public final class ReceiverEngine {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if packet.isVisible {
+                let cursorType = CursorType(rawValue: packet.cursorType) ?? .arrow
                 self.cursorOverlayView.updateCursor(normalizedX: CGFloat(packet.x) / CGFloat(self.cursorSpaceWidth),
-                                                    normalizedY: CGFloat(packet.y) / CGFloat(self.cursorSpaceHeight))
+                                                     normalizedY: CGFloat(packet.y) / CGFloat(self.cursorSpaceHeight),
+                                                     cursorType: cursorType)
             } else {
                 self.cursorOverlayView.hideCursor()
             }
+            if self.immersiveModeEnabled { self.hideNativeCursorIfNeeded() }
             self.ackSender?.send(AckPacket(sequence: packet.sequence))
         }
     }
 
     private func hideNativeCursorIfNeeded() {
-        guard immersiveModeEnabled, !nativeCursorHidden, NSApp.isActive else { return }
-        let result = CGDisplayHideCursor(CGMainDisplayID())
-        if result == .success {
-            nativeCursorHidden = true
-        } else {
+        guard immersiveModeEnabled else { return }
+        let result = nativeCursorController.hideIfNeeded()
+        if result != .success {
             log.write(.warning, "隐藏原生光标失败（结果码：\(result.rawValue)）")
         }
     }
 
     private func showNativeCursorIfNeeded() {
-        guard nativeCursorHidden else { return }
-        CGDisplayShowCursor(CGMainDisplayID())
-        nativeCursorHidden = false
+        guard nativeCursorController != nil else { return }
+        let result = nativeCursorController.restoreIfNeeded()
+        if result != .success {
+            log.write(.warning, "恢复原生光标失败（结果码：\(result.rawValue)）")
+        }
     }
 }

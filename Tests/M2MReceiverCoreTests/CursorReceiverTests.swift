@@ -1,9 +1,35 @@
+import CoreGraphics
 import XCTest
 import Network
 import M2MShared
 @testable import M2MReceiverCore
 
 final class CursorReceiverTests: XCTestCase {
+    func test原生光标隐藏与恢复严格配对() {
+        var hiddenDisplayIDs: [CGDirectDisplayID] = []
+        var shownDisplayIDs: [CGDirectDisplayID] = []
+        let controller = NativeCursorController(
+            displayID: 42,
+            hideCursor: { displayID in
+                hiddenDisplayIDs.append(displayID)
+                return .success
+            },
+            showCursor: { displayID in
+                shownDisplayIDs.append(displayID)
+                return .success
+            }
+        )
+
+        controller.hideIfNeeded()
+        controller.hideIfNeeded()
+        controller.restoreIfNeeded()
+        controller.restoreIfNeeded()
+
+        XCTAssertEqual(hiddenDisplayIDs, [42])
+        XCTAssertEqual(shownDisplayIDs, [42])
+        XCTAssertFalse(controller.didHideCursor)
+    }
+
     func test新的发送会话可以从较小序号重新开始() async throws {
         let receiver = CursorReceiver()
         let firstPacketReceived = expectation(description: "收到第一个会话的光标包")

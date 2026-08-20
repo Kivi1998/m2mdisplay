@@ -82,10 +82,10 @@ public final class SenderEngine {
 
         let mouseTap = MouseTap(virtualDisplayID: virtualDisplay.displayID)
         self.mouseTap = mouseTap
-        mouseTap.onPosition = { [weak self] x, y, isVisible in
+        mouseTap.onPosition = { [weak self] x, y, cursorType, isVisible in
             guard let self else { return }
             self.cursorSeq += 1
-            self.cursorSender?.send(CursorPacket(x: x, y: y, cursorType: CursorType.arrow.rawValue, sequence: self.cursorSeq, isVisible: isVisible))
+            self.cursorSender?.send(CursorPacket(x: x, y: y, cursorType: cursorType.rawValue, sequence: self.cursorSeq, isVisible: isVisible))
         }
         let ackReceiver = AckReceiver()
         self.ackReceiver = ackReceiver
