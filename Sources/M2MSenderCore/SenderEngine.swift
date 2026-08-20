@@ -1,6 +1,5 @@
 // Sources/M2MSenderCore/SenderEngine.swift
 import CoreGraphics
-import CoreMedia
 import Foundation
 import M2MShared
 
@@ -28,7 +27,6 @@ public final class SenderEngine {
     private var encoder: VideoEncoder?
     private var videoSender: VideoSender?
     private var cursorSender: CursorSender?
-    private var audioSender: AudioSender?
     private var mouseTap: MouseTap?
     private var ackReceiver: AckReceiver?
     private var cursorSeq: UInt32 = 0
@@ -81,19 +79,6 @@ public final class SenderEngine {
         self.videoSender = videoSender
         let cursorSender = CursorSender(host: receiverHost, port: NetworkConfig.cursorPort)
         self.cursorSender = cursorSender
-
-        // 音频是非关键通道，连接过程不阻塞投屏启动——视频/光标就绪了就先跑起来，
-        // 音频连不上只是没声音，不应该拖累整个投屏失败。
-        let audioSender = AudioSender(host: receiverHost, port: NetworkConfig.audioPort)
-        self.audioSender = audioSender
-        Task { [log] in
-            do {
-                try await audioSender.waitUntilReady()
-                log.write(.info, "音频通道已连接")
-            } catch {
-                log.write(.warning, "音频通道连接失败，投屏将继续但暂时没有声音：\(error)")
-            }
-        }
 
         let mouseTap = MouseTap(virtualDisplayID: virtualDisplay.displayID)
         self.mouseTap = mouseTap
@@ -151,11 +136,9 @@ public final class SenderEngine {
         mouseTap?.stop()
         videoSender?.stop()
         cursorSender?.stop()
-        audioSender?.stop()
         ackReceiver?.stop()
         videoSender = nil
         cursorSender = nil
-        audioSender = nil
         mouseTap = nil
         ackReceiver = nil
     }
@@ -208,12 +191,6 @@ public final class SenderEngine {
         }
         capturer.onFrame = { [weak encoder] sampleBuffer in
             encoder?.encode(sampleBuffer)
-        }
-        capturer.onAudioSampleBuffer = { [weak self] sampleBuffer in
-            guard let self, let payload = AudioSampleConverter.convert(sampleBuffer) else { return }
-            let presentationSeconds = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
-            let presentationTimeNanos = UInt64(max(0, presentationSeconds) * 1_000_000_000)
-            self.audioSender?.send(payload: payload, presentationTimeNanos: presentationTimeNanos)
         }
         capturer.onStreamStopped = { [weak self] error in
             self?.log.write(.warning, "抓屏流意外中断：\(String(describing: error))")

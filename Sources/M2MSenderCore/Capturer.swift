@@ -8,7 +8,6 @@ final class FrameCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
     private let height: Int
     private let frameRate: Int
     var onFrame: ((CMSampleBuffer) -> Void)?
-    var onAudioSampleBuffer: ((CMSampleBuffer) -> Void)?
     var onStreamStopped: ((Error?) -> Void)?
 
     init(displayID: CGDirectDisplayID, width: Int, height: Int, frameRate: Int = 60) {
@@ -30,9 +29,6 @@ final class FrameCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "com.m2mdisplay.capture"))
-        // 音频用独立队列，不要跟屏幕帧共用——音频回调对时序敏感，混在一起排队
-        // 可能被视频帧处理的耗时拖慢，引入不必要的音频延迟/卡顿。
-        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.m2mdisplay.audiocapture"))
         try await stream.startCapture()
         self.stream = stream
     }
@@ -48,13 +44,6 @@ final class FrameCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(frameRate))
         config.queueDepth = 3
         config.colorSpaceName = CGColorSpace.sRGB
-        // 系统音频同样走 ScreenCaptureKit 采集，不需要额外的虚拟声卡/权限——复用
-        // 已经申请过的屏幕录制权限。采样率/声道数在这里固定写死，跟
-        // AudioWireFormat 的线上格式无关：这里定的是 ScreenCaptureKit 给我们的
-        // 源格式，AudioSampleConverter 会再转换成线上那份固定格式。
-        config.capturesAudio = true
-        config.sampleRate = 48000
-        config.channelCount = 2
         return config
     }
 
@@ -64,15 +53,8 @@ final class FrameCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard sampleBuffer.isValid else { return }
-        switch type {
-        case .screen:
-            onFrame?(sampleBuffer)
-        case .audio:
-            onAudioSampleBuffer?(sampleBuffer)
-        default:
-            break
-        }
+        guard type == .screen, sampleBuffer.isValid else { return }
+        onFrame?(sampleBuffer)
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
