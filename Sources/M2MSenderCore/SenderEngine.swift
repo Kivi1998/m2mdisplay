@@ -86,6 +86,9 @@ public final class SenderEngine {
             self.cursorSeq += 1
             self.cursorSender?.send(CursorPacket(x: x, y: y, cursorType: CursorType.arrow.rawValue, sequence: self.cursorSeq, isVisible: isVisible))
         }
+        mouseTap.onSystemInterruption = { [weak self] reason in
+            self?.log.write(.warning, "鼠标事件监听被系统关闭（\(reason)），已自动重新启用")
+        }
 
         let ackReceiver = AckReceiver()
         self.ackReceiver = ackReceiver
@@ -107,7 +110,11 @@ public final class SenderEngine {
             return
         }
 
-        guard await startCapturePipeline(retryCount: 0) else { return }
+        guard await startCapturePipeline(retryCount: 0) else {
+            await teardownCapturePipeline()
+            teardownTransport()
+            return
+        }
         state = .running
         log.write(.info, "运行中")
     }
@@ -123,16 +130,22 @@ public final class SenderEngine {
         state = .stopping
         log.write(.info, "正在停止（用户操作）")
         await teardownCapturePipeline()
+        teardownTransport()
+        state = .idle
+        log.write(.info, "已停止")
+    }
+
+    /// 先让光标监听器发送一次“不可见”，再关闭 UDP 和视频连接。反过来关闭会让
+    /// 最后的隐藏包来不及发出，接收端只能保留断联前的箭头。
+    private func teardownTransport() {
+        mouseTap?.stop()
         videoSender?.stop()
         cursorSender?.stop()
-        mouseTap?.stop()
         ackReceiver?.stop()
         videoSender = nil
         cursorSender = nil
         mouseTap = nil
         ackReceiver = nil
-        state = .idle
-        log.write(.info, "已停止")
     }
 
     private var isErrorState: Bool {
@@ -196,6 +209,10 @@ public final class SenderEngine {
             if await startCapturePipeline(retryCount: 0) {
                 state = .running
                 log.write(.info, "已恢复")
+            } else {
+                await teardownCapturePipeline()
+                teardownTransport()
+                log.write(.error, "抓屏恢复失败，已断开投屏并通知 iMac 恢复原生桌面")
             }
         }
     }

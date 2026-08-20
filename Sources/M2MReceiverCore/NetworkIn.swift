@@ -105,6 +105,7 @@ final class VideoReceiver {
 
 final class CursorReceiver {
     private var listener: NWListener?
+    private var connection: NWConnection?
     private var lastSequence: UInt32?
     var onCursor: ((CursorPacket) -> Void)?
 
@@ -113,16 +114,24 @@ final class CursorReceiver {
         let nwPort = NWEndpoint.Port(rawValue: port)!
         let listener = try NWListener(using: params, on: nwPort)
         listener.newConnectionHandler = { [weak self] conn in
+            guard let self else { return }
+            let previousConnection = self.connection
+            self.connection = conn
+            self.lastSequence = nil
+            previousConnection?.stateUpdateHandler = nil
+            previousConnection?.cancel()
             conn.start(queue: .main)
-            self?.receiveDatagram(on: conn)
+            self.receiveDatagram(on: conn)
         }
         listener.start(queue: .main)
         self.listener = listener
     }
 
     private func receiveDatagram(on connection: NWConnection) {
-        connection.receiveMessage { [weak self] data, _, _, error in
+        connection.receiveMessage { [weak self, weak connection] data, _, _, error in
+            guard let connection else { return }
             guard let self else { return }
+            guard self.connection === connection else { return }
             if let data, let packet = CursorPacket.decode(data) {
                 // 丢弃过期或乱序数据包，因为只有最新位置有意义。
                 // 使用可安全处理回绕的比较方式，像 TCP 一样把序列号视为环形空间。
@@ -139,6 +148,12 @@ final class CursorReceiver {
     }
 
     func stop() {
+        let activeConnection = connection
+        connection = nil
+        activeConnection?.stateUpdateHandler = nil
+        activeConnection?.cancel()
         listener?.cancel()
+        listener = nil
+        lastSequence = nil
     }
 }

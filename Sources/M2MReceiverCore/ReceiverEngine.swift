@@ -138,6 +138,7 @@ public final class ReceiverEngine {
         isCasting = false
         immersiveModeEnabled = false
         NSApp.presentationOptions = []
+        displayView.hideCursor()
         window.orderOut(nil)
         showNativeCursorIfNeeded()
         powerAssertion.stop()

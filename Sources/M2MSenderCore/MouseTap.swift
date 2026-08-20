@@ -17,6 +17,7 @@ final class MouseTap {
     /// 每次光标离开虚拟显示器时，isVisible 只会发送一次 false。
     /// 接收端据此隐藏叠加光标，避免光标移回本机屏幕后仍停留在离开前的位置。
     var onPosition: ((Float, Float, Bool) -> Void)?
+    var onSystemInterruption: ((String) -> Void)?
     private var eventCount = 0
     private var isInsideBounds = false
 
@@ -28,6 +29,8 @@ final class MouseTap {
 
     func start() -> Bool {
         let mask: CGEventMask = (1 << CGEventType.mouseMoved.rawValue)
+            | (1 << CGEventType.leftMouseDown.rawValue)
+            | (1 << CGEventType.leftMouseUp.rawValue)
             | (1 << CGEventType.leftMouseDragged.rawValue)
             | (1 << CGEventType.rightMouseDragged.rawValue)
 
@@ -37,9 +40,13 @@ final class MouseTap {
             place: .headInsertEventTap,
             options: .listenOnly,
             eventsOfInterest: mask,
-            callback: { _, _, event, refcon in
+            callback: { _, type, event, refcon in
                 guard let refcon else { return Unmanaged.passUnretained(event) }
                 let mouseTap = Unmanaged<MouseTap>.fromOpaque(refcon).takeUnretainedValue()
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    mouseTap.reenableAfterSystemInterruption(type)
+                    return Unmanaged.passUnretained(event)
+                }
                 mouseTap.handle(event)
                 return Unmanaged.passUnretained(event)
             },
@@ -54,6 +61,17 @@ final class MouseTap {
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         return true
+    }
+
+    /// macOS 可能因回调超时或一次用户输入临时关闭事件监听。系统会把关闭原因
+    /// 作为特殊事件送进同一个回调；若忽略事件类型，后续移动就永远不会再上报，
+    /// iMac 只能停留在最后一个箭头位置。
+    private func reenableAfterSystemInterruption(_ type: CGEventType) {
+        guard let eventTap else { return }
+        let reason = type == .tapDisabledByTimeout ? "回调超时" : "用户输入"
+        fputs("[MouseTap] 鼠标事件监听被系统关闭（\(reason)），正在重新启用\n", stderr)
+        onSystemInterruption?(reason)
+        CGEvent.tapEnable(tap: eventTap, enable: true)
     }
 
     private func handle(_ event: CGEvent) {
@@ -81,6 +99,10 @@ final class MouseTap {
     }
 
     func stop() {
+        if isInsideBounds {
+            isInsideBounds = false
+            onPosition?(0, 0, false)
+        }
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let source = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         eventTap = nil
