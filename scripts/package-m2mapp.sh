@@ -41,6 +41,7 @@ cp "scripts/m2m-start-all.sh" "$APP_DIR/Contents/Resources/m2m-start-all.sh"
 cp "scripts/m2m-stop-all.sh" "$APP_DIR/Contents/Resources/m2m-stop-all.sh"
 chmod +x "$APP_DIR/Contents/Resources/m2m-start-all.sh"
 chmod +x "$APP_DIR/Contents/Resources/m2m-stop-all.sh"
+cp "Resources/M2MApp.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -49,6 +50,8 @@ cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
 <dict>
     <key>CFBundleExecutable</key>
     <string>M2MApp</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.kivi1998.m2mdisplay</string>
     <key>CFBundleName</key>

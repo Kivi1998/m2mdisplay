@@ -57,6 +57,7 @@ final class AppState: ObservableObject {
         receiverEngine = nil
         statusText = "未启动"
         isRunning = false
+        DispatchQueue.main.async { NSApp.setActivationPolicy(.accessory) }
         Task {
             await outgoingSender?.stop()
             outgoingReceiver?.hideCast()
@@ -66,6 +67,15 @@ final class AppState: ObservableObject {
     private func activateEngine(for role: AppRole) {
         switch role {
         case .sender:
+            // 发送端（MacBook）常驻 Dock，可以固定在 Dock 里，点击图标即可重新
+            // 确认/启动两端连接（见 applicationShouldHandleReopen）。接收端
+            // （iMac）继续保持 Info.plist 里 LSUIElement 的默认无 Dock 图标状态，
+            // 不受这里影响。
+            // activateEngine(for:) 在 App 冷启动时会从 AppState.init() 同步调用，
+            // 这时 SwiftUI 的启动流程可能还没来得及给 NSApp 这个全局量赋值，直接
+            // 调用 NSApp.setActivationPolicy(...) 会隐式解包到 nil 崩溃（已实测
+            // 踩过）；派发到下一个 run loop 循环，此时 NSApp 一定已经就绪。
+            DispatchQueue.main.async { NSApp.setActivationPolicy(.regular) }
             let engine = SenderEngine()
             engine.onStateChange = { [weak self] state in
                 Task { @MainActor in self?.applySenderState(state) }

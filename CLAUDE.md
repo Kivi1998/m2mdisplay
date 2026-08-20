@@ -29,7 +29,12 @@ Dock、菜单栏都隐藏掉。这个规则不是随便定的——已经因为�
   悬浮窗口（`CursorOverlayView`）里叠加渲染对应形状（箭头/手形/工字）。
 - `M2MApp`：SwiftUI 菜单栏图形界面，两台机器装同一个 App，启动时选角色，
   可以随时开始/停止投屏。用 `scripts/package-m2mapp.sh` 打包成真正的
-  `.app`（SPM 不会自动做这件事）。
+  `.app`（SPM 不会自动做这件事），图标源文件在 `Resources/M2MApp.icns`。
+  发送端（MacBook）角色激活时会切到 `.regular` 常驻 Dock（可以右键"在 Dock
+  中保留"钉住），点 Dock 图标（不管是冷启动还是已经在跑时再点一次）都会走
+  `ensureReceiverIsRunning()`/`AppState.init()` 里已有的逻辑，自动确认/启动
+  iMac 接收端；接收端（iMac）角色不受影响，继续保持 Info.plist 里
+  `LSUIElement` 的默认无 Dock 图标状态。
 - `M2MShared`：两端共用的协议定义（`CursorPacket`/`FrameHeader`/
   `AckPacket`）和持久化事件日志 `EventLog`（写到
   `~/Library/Logs/M2MDisplay/`）。
@@ -78,6 +83,17 @@ scripts/package-m2mapp.sh
 
 ## 已知的坑（排查过、别再踩一遍）
 
+- **`AppState.init()` 里同步调用 `NSApp.setActivationPolicy(...)` 会崩溃**：
+  实测过——`AppState.init()` 是在 `M2MApplicationDelegate.init()` 里同步构造
+  的，而这又发生在 SwiftUI `App.main()` 内部构造 `NSApplicationDelegateAdaptor`
+  的过程中；这个时间点 `NSApp` 这个全局量可能还没被赋值，直接用还会隐式解包
+  崩溃（`Swift runtime failure: Unexpectedly found nil while implicitly
+  unwrapping an Optional value`，崩溃报告里能看到 `AppState.activateEngine`
+  这一帧）。诡异的是这个崩溃只在通过 `open -a`/Dock 图标这种走完整
+  LaunchServices 流程启动时才会现身，直接跑裸可执行文件反而不会触发——排查
+  时被这个表现误导了一阵，一度怀疑是代码签名/Gatekeeper 问题，其实无关。
+  解法：把这类调用包一层 `DispatchQueue.main.async { ... }`，推迟到下一个
+  run loop 循环再执行，那时 `NSApp` 必然已经就绪。
 - **虚拟显示器创建有时序竞态**：`CGVirtualDisplay` 注册自定义分辨率模式
   是异步的，创建后立刻查询模式列表有概率查不到，需要带重试。更麻烦的是：
   如果这个创建过程是在主线程、且主运行循环已经在跑的情况下同步调用
