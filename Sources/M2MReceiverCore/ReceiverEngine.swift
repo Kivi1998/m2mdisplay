@@ -77,6 +77,7 @@ public final class ReceiverEngine {
     private let videoPixelHeight = 2160
     private let escapeHatch = EscapeHatch()
     private let powerAssertion = PowerAssertion()
+    private let localInputGuard = LocalInputGuard()
     private var immersiveModeEnabled = false
     private var isCasting = false
     private var waitingForFirstFrame = false
@@ -191,6 +192,12 @@ public final class ReceiverEngine {
         window.orderFrontRegardless()
         cursorWindow.orderFrontRegardless()
         hideNativeCursorIfNeeded()
+        if localInputGuard.start() {
+            log.write(.info, "已接管本机鼠标事件，投屏期间 iMac 鼠标不会再穿透到桌面")
+        } else {
+            log.write(.warning, "接管本机鼠标事件失败——请到系统设置 > 隐私与安全性 > 辅助功能，" +
+                      "给 M2M Display 加一次权限；加之前点击 iMac 鼠标可能会让隐藏的原生光标重新出现")
+        }
         if powerAssertion.start() {
             log.write(.info, "电源断言已生效")
         } else {
@@ -216,6 +223,7 @@ public final class ReceiverEngine {
         NSApp.presentationOptions = []
         window.orderOut(nil)
         cursorWindow.orderOut(nil)
+        localInputGuard.stop()
         showNativeCursorIfNeeded()
         powerAssertion.stop()
         state = .listening
@@ -242,6 +250,7 @@ public final class ReceiverEngine {
         cursorReceiver.stop()
         ackSender?.stop()
         ackSender = nil
+        localInputGuard.stop()
         showNativeCursorIfNeeded()
         NSApp.presentationOptions = []
         powerAssertion.stop()

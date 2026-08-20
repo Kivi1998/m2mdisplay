@@ -90,16 +90,33 @@ scripts/package-m2mapp.sh
   SPDisplaysDataType` 里能看到一个 "M2M Display" 条目一直 "Online: Yes"，
   怎么等都不消失。目前发现最有效的解决办法是 `sudo killall WindowServer`
   （需要用户自己在真实终端里输入密码执行，我这边的工具跑不了 sudo）。
-- **`NSCursor.arrow`/`.iBeam` 这两个静态单例的 `.image` 在这个项目的进程
-  环境下不可靠**：读出来是空图像（`size=(0,0)`，0 张 representation），
-  哪怕是在有完整 `NSApplication` 主循环的正常 GUI App 进程里也一样（用
-  `M2MReceiverCLI` 验证过）。`.pointingHand`/`.resizeLeftRight`/
-  `.resizeUpDown` 这几个反而能正常读到位图，不确定原因，没深究。因此接收端
-  （`CursorOverlayView.swift`）三种光标都是手绘的（黑色填充 + 白色描边），
-  不要改回依赖这几个静态单例的 `.image`。
+- **`NSCursor.arrow`/`.iBeam` 的 `.image` 是否可靠取决于进程是不是正经的
+  `.app` bundle**：在裸命令行进程（比如直接 `swiftc` 编译出的可执行文件、
+  或者 `M2MReceiverCLI` 那种没有 `Info.plist`/Bundle ID 的可执行文件）里读出
+  来是空图像（`size=(0,0)`，0 张 representation）；但在真正通过 `open -a`
+  启动、有 `Info.plist` 的 `.app` bundle 里（比如 `M2MApp.app`）是能正常读到
+  位图的，实测过。`CursorOverlayView.swift` 里箭头用 `NSCursor.arrow.image`
+  （配 `.hotSpot`，数值跟下面提到的 hotx/hoty 是同一套坐标系，不用转换），
+  读不到时退化成手绘版本兜底——如果哪天改成用 `M2MReceiverCLI` 部署接收端，
+  记得箭头会退化成手绘那版，不是 bug。
+  手形、工字这两个不经过 `NSCursor`，是直接读系统自带的矢量光标资源文件：
+  `/System/Library/Frameworks/ApplicationServices.framework/Versions/A/
+  Frameworks/HIServices.framework/Versions/A/Resources/cursors/<name>/`
+  下面的 `cursor.pdf`（图形）+ `info.plist`（`hotx`/`hoty` 就是热点，直接当
+  "左上角原点、Y 轴向下"的坐标用，不用翻转，已经用真机渲染加标记点验证过）。
+  这个路径不是公开 API，是从系统怎么显示这些光标反推出来的，`pointinghand`
+  和 `ibeamhorizontal`（注意不是 `ibeamvertical`，那个是竖排文字用的）这两个
+  文件夹名字也是试出来的。渲染这个 PDF 时**不能**套用手绘图形那套"先把 Y
+  轴翻转过来再画"的变换——PDF 页面本身就是标准的左下角原点、Y 向上，
+  照抄手绘那套变换会把图形画成上下颠倒，已经用真实 CALayer 渲染截图验证过，
+  两种画法配合 `CALayer.contents` 的表现不一样。换 macOS 大版本这个路径可能
+  会挪地方，读不到时（`loadSystemCursorGlyph` 返回 `nil`）会退化成手绘版本，
+  不会崩溃或显示空白光标。
+  找不到系统自带的箭头资源文件（大概率是直接烧录在 WindowServer 里，不是
+  独立文件），只能靠 `NSCursor.arrow.image`，所以箭头这条退化路径更容易触发。
   发送端识别"当前系统光标是哪种类型"用的是另一个 API——`NSCursor.
   currentSystem`（跨进程读取 WindowServer 当前真实显示的光标，不同于只反映
-  本 App 光标矩形的 `.current`），它读到的位图是正常的，不受上面那个坑影响。
+  本 App 光标矩形的 `.current`），它读到的位图不受上面这些坑影响，随时可靠。
   但它返回的对象跟 `.arrow`/`.iBeam`/`.pointingHand` 这些单例不是同一个实例，
   不能用 `===` 身份比较来判断类型，只能靠位图尺寸 + 热点坐标做指纹匹配（见
   `CursorClassifier.swift`）。这组指纹是在当前这台 MacBook Pro、当前这个
@@ -107,6 +124,14 @@ scripts/package-m2mapp.sh
   箭头，不会渲染出错误形状或崩溃，但会退化成"看不出来是手形/工字"——如果
   升级系统后发现手形/工字都不出现了，先怀疑这里，重新跑一遍
   `CursorClassifier.swift` 顶部注释提到的采样方法拿新指纹。
+- **`CGDisplayHideCursor` 的隐藏状态会被点击重置**：这是 macOS 自身的固有
+  行为，不是这个项目的 bug——只隐藏光标图案挡不住"点一下 iMac 鼠标，刚隐藏的
+  原生箭头又冒出来"。真正的解法是投屏期间用 `LocalInputGuard`（`CGEventTap`
+  的 `.defaultTap`，不是只能旁听的 `.listenOnly`）把 iMac 本机的鼠标事件在
+  派发给任何 App 之前就直接吞掉，点击既然到不了桌面，就没有谁会去触发那个
+  重新显示光标的逻辑。这个吞事件的权限比 `MouseTap` 当年用的"输入监控"高一
+  级，需要"辅助功能"（Accessibility），跟下面"屏幕录制权限"一样按 Bundle ID
+  独立授权，第一次用要单独去加。
 - **`.app` 打包后一秒左右自己退出**：如果 `.build/M2MApp.app` 和
   `/Applications/M2MApp.app` 共用同一个 `CFBundleIdentifier`（比如测试时
   直接 `open` 过 build 目录里那份），macOS 26 的 Control Center 会把

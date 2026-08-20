@@ -8,11 +8,21 @@ import M2MShared
 /// 当普通兄弟图层，否则 macOS 的视频合成路径可能把光标盖在视频画面下面，必须
 /// 用独立窗口叠在最上层。
 ///
-/// 三种光标形状都是手绘的（黑色填充 + 白色描边，贴近原生 macOS 外观），而不是
-/// 读取系统光标位图——发送端能用 `NSCursor.currentSystem` 的位图指纹分辨出当前
-/// 是哪种光标（见 CursorClassifier.swift），但接收端这边直接用 `NSCursor.arrow`
-/// 等内置单例的 `.image` 在这个进程环境下是空的（0 张 representation，已经在
-/// CLAUDE.md 里记过这个坑），没有可靠的系统位图能直接拿来用，所以维持手绘。
+/// 三种光标形状优先直接用 macOS 自带的原生素材，而不是手绘近似图案：
+/// - 手形、工字：直接从 HIServices.framework 里 AppKit 自己也在用的矢量 PDF
+///   （`.../HIServices.framework/Versions/A/Resources/cursors/<name>/cursor.pdf`，
+///   同目录 `info.plist` 里的 `hotx`/`hoty` 就是热点）现取现画，不经过
+///   `NSCursor` 这层——`.image` 属性在某些启动方式下是空的（见 CLAUDE.md），
+///   直接读文件反而不受这个坑影响。热点坐标系已经用真机渲染+标记点验证过，
+///   是"左上角原点、Y 轴向下"，直接用不用翻转；渲染这个 PDF 时也不能套用
+///   下面手绘图形那套"先翻转 Y 轴再画"的变换——PDF 页面自己就是标准的左下角
+///   原点、Y 向上，套那套变换会把图形画成上下颠倒，已经用实际 CALayer 渲染
+///   截图验证过。
+/// - 箭头：系统资源目录里没有单独的箭头文件（大概率是直接烧录在 WindowServer
+///   里的），但实测在正常 `.app` bundle 里（`open -a` 启动，不是裸命令行）
+///   `NSCursor.arrow.image` 是能正常读到位图的，用它代替手绘。
+/// 三者都保留手绘版本兜底：万一哪天素材路径失效或者 `.image` 又读不出来了，
+/// 退化成手绘图案也不会显示空白光标。
 final class CursorOverlayView: NSView {
     private struct Glyph {
         let image: CGImage
@@ -99,9 +109,75 @@ final class CursorOverlayView: NSView {
         }
     }
 
-    // MARK: - 手绘图形
+    // MARK: - 优先加载原生素材
+
+    /// 系统级光标矢量资源目录。不是公开 API，是从 AppKit 自己加载内置光标的
+    /// 实际路径里找到的（用 `pointinghand`/`ibeamhorizontal` 两个真实文件夹
+    /// 渲染出来跟系统显示的一模一样，已经验证过）。换 macOS 大版本时如果这个
+    /// 路径挪了地方，下面的加载函数会拿到 nil，自动退化成手绘版本，不会崩溃。
+    private static let systemCursorsDirectory =
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/HIServices.framework/Versions/A/Resources/cursors"
 
     private static func makeArrowGlyph() -> Glyph {
+        let cursor = NSCursor.arrow
+        let image = cursor.image
+        if image.size.width > 0, image.size.height > 0,
+           let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            // 实测：只有真正的 .app bundle（比如 open -a 启动的 M2MApp）里这个属性
+            // 才读得出位图；裸命令行进程里是空的（CLAUDE.md 记过）。这里两种情况
+            // 都要兜住，读不出来就退化成手绘箭头。
+            return Glyph(image: cgImage, size: image.size, hotSpot: cursor.hotSpot)
+        }
+        return makeArrowFallbackGlyph()
+    }
+
+    private static func makePointingHandGlyph() -> Glyph {
+        loadSystemCursorGlyph(folder: "pointinghand") ?? makePointingHandFallbackGlyph()
+    }
+
+    private static func makeIBeamGlyph() -> Glyph {
+        loadSystemCursorGlyph(folder: "ibeamhorizontal") ?? makeIBeamFallbackGlyph()
+    }
+
+    /// 从系统自带的矢量光标资源现取现画。`info.plist` 里的 hotx/hoty 已经用真机
+    /// 渲染 + 标记点验证过，是"左上角原点、Y 轴向下"，直接拿来当 Glyph.hotSpot
+    /// 用、不用换算。绘制时刻意不套用 render(path:...) 那套"先翻转 Y 轴"的变换——
+    /// PDF 页面本身就是左下角原点、Y 向上，套了反而会画成上下颠倒（同样已经用
+    /// 真实 CALayer 渲染截图验证过）。
+    private static func loadSystemCursorGlyph(folder: String, renderScale: CGFloat = 2) -> Glyph? {
+        let directory = "\(systemCursorsDirectory)/\(folder)"
+        guard let plist = NSDictionary(contentsOfFile: "\(directory)/info.plist"),
+              let hotX = plist["hotx"] as? NSNumber,
+              let hotY = plist["hoty"] as? NSNumber,
+              let pdfDocument = CGPDFDocument(URL(fileURLWithPath: "\(directory)/cursor.pdf") as CFURL),
+              let page = pdfDocument.page(at: 1)
+        else { return nil }
+
+        let box = page.getBoxRect(.mediaBox)
+        let pixelWidth = Int(box.width * renderScale)
+        let pixelHeight = Int(box.height * renderScale)
+        guard pixelWidth > 0, pixelHeight > 0,
+              let context = CGContext(
+                data: nil,
+                width: pixelWidth,
+                height: pixelHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              )
+        else { return nil }
+        context.scaleBy(x: renderScale, y: renderScale)
+        context.drawPDFPage(page)
+        guard let image = context.makeImage() else { return nil }
+
+        return Glyph(image: image, size: box.size,
+                     hotSpot: CGPoint(x: CGFloat(hotX.doubleValue), y: CGFloat(hotY.doubleValue)))
+    }
+
+    // MARK: - 手绘兜底图形（原生素材加载失败时使用）
+
+    private static func makeArrowFallbackGlyph() -> Glyph {
         let size = CGSize(width: 16, height: 22)
         let path = CGMutablePath()
         path.move(to: CGPoint(x: 0, y: 0))
@@ -119,7 +195,7 @@ final class CursorOverlayView: NSView {
     /// 简化成"指向的食指 + 收拢的拳心"两个圆角矩形的并集。两块形状在指根处
     /// 故意保留重叠但描边仍各画各的，会在指根留下一道白色分隔线——这其实跟真实
     /// macOS 手形光标里手指之间的分隔线效果类似，不是 bug，不用消除。
-    private static func makePointingHandGlyph() -> Glyph {
+    private static func makePointingHandFallbackGlyph() -> Glyph {
         let size = CGSize(width: 18, height: 20)
         let path = CGMutablePath()
         path.addPath(CGPath(roundedRect: CGRect(x: 5, y: 0, width: 4, height: 11),
@@ -132,7 +208,7 @@ final class CursorOverlayView: NSView {
 
     /// 经典文本工字光标：上下两道短横 + 中间一道细竖线，一笔画成单一闭合轮廓，
     /// 避免用三个独立矩形拼接在衔接处露出多余的白色描边缝隙。
-    private static func makeIBeamGlyph() -> Glyph {
+    private static func makeIBeamFallbackGlyph() -> Glyph {
         let size = CGSize(width: 9, height: 16)
         let barHeight: CGFloat = 1.6
         let path = CGMutablePath()
