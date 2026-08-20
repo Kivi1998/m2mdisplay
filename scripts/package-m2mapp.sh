@@ -35,7 +35,12 @@ fi
 
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
+mkdir -p "$APP_DIR/Contents/Resources"
 cp "$BINARY" "$APP_DIR/Contents/MacOS/M2MApp"
+cp "scripts/m2m-start-all.sh" "$APP_DIR/Contents/Resources/m2m-start-all.sh"
+cp "scripts/m2m-stop-all.sh" "$APP_DIR/Contents/Resources/m2m-stop-all.sh"
+chmod +x "$APP_DIR/Contents/Resources/m2m-start-all.sh"
+chmod +x "$APP_DIR/Contents/Resources/m2m-stop-all.sh"
 
 cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -65,6 +70,20 @@ cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
 </dict>
 </plist>
 EOF
+
+# 保持正式 App 的签名身份稳定，屏幕录制权限才不会在每次重新打包后被系统视为
+# 另一个应用。可以用 M2M_CODESIGN_IDENTITY 显式覆盖；默认优先使用当前机器上
+# 已经用于 M2M Display 的开发证书。
+SIGNING_IDENTITY="${M2M_CODESIGN_IDENTITY:-5E5C8A30867FF7E473AE07D55B295E5E1BABA757}"
+if ! /usr/bin/security find-identity -v -p codesigning | /usr/bin/grep -q "$SIGNING_IDENTITY"; then
+    SIGNING_IDENTITY="$(/usr/bin/security find-identity -v -p codesigning | /usr/bin/awk '/Apple Development:/ { print $2; exit }')"
+fi
+if [ -z "$SIGNING_IDENTITY" ]; then
+    echo "错误：找不到可用的 Apple Development 签名证书" >&2
+    exit 1
+fi
+/usr/bin/codesign --force --deep --options runtime --timestamp=none --sign "$SIGNING_IDENTITY" "$APP_DIR"
+/usr/bin/codesign --verify --deep --strict "$APP_DIR"
 
 # 把 build 目录里那份从 LaunchServices 注销掉，这样它就不可能跟
 # /Applications 里那份共用同一个身份共存——详见上面的"重要"说明。

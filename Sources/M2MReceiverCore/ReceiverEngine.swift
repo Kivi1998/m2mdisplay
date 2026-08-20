@@ -20,6 +20,8 @@ private final class ReceiverWindow: NSWindow {
 /// 跟窗口/监听器本身（prepareWindow()）分开——窗口只创建一次，默认隐藏，网络监听器
 /// 在隐藏/显示之间切换时始终保持存活，这样重新打开投屏不需要发送端重新连接。
 public final class ReceiverEngine {
+    static let cursorWindowLevel = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+
     public private(set) var state: ReceiverState = .idle {
         didSet { onStateChange?(state) }
     }
@@ -28,6 +30,8 @@ public final class ReceiverEngine {
     private let log = EventLog(role: "receiver")
     private var window: NSWindow!
     private var displayView: DisplayView!
+    private var cursorWindow: NSWindow!
+    private var cursorOverlayView: CursorOverlayView!
     private let videoReceiver = VideoReceiver()
     private let cursorReceiver = CursorReceiver()
     private var formatDescription: CMFormatDescription?
@@ -40,7 +44,8 @@ public final class ReceiverEngine {
     private var immersiveModeEnabled = false
     private var nativeCursorHidden = false
     private var isCasting = false
-    private lazy var ackSender = AckSender(host: Endpoints.senderHost, port: NetworkConfig.ackPort)
+    private var waitingForFirstFrame = false
+    private var ackSender: AckSender?
 
     public init() {}
 
@@ -67,6 +72,19 @@ public final class ReceiverEngine {
         window.level = .floating
         window.orderOut(nil)
 
+        cursorWindow = ReceiverWindow(contentRect: screenFrame, styleMask: [.borderless], backing: .buffered, defer: false)
+        cursorWindow.backgroundColor = .clear
+        cursorWindow.isOpaque = false
+        cursorWindow.hasShadow = false
+        cursorWindow.ignoresMouseEvents = true
+        cursorWindow.collectionBehavior = [.stationary, .ignoresCycle]
+        cursorOverlayView = CursorOverlayView(frame: cursorWindow.contentView?.bounds ?? screenFrame)
+        cursorOverlayView.autoresizingMask = [.width, .height]
+        cursorWindow.contentView = cursorOverlayView
+        cursorWindow.setFrame(screenFrame, display: true)
+        cursorWindow.level = Self.cursorWindowLevel
+        cursorWindow.orderOut(nil)
+
         if escapeHatch.start() {
             log.write(.info, "退出开关已就绪——连按三次 Escape 可隐藏投屏")
         } else {
@@ -76,13 +94,23 @@ public final class ReceiverEngine {
         videoReceiver.onConnected = { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.log.write(.info, "发送端已连接，自动显示投屏")
-                self.showCast()
+                self.formatDescription = nil
+                self.displayView.resetVideo()
+                self.cursorOverlayView.hideCursor()
+                self.waitingForFirstFrame = true
+                self.cursorReceiver.beginSession()
+                self.ackSender?.stop()
+                self.ackSender = AckSender(host: Endpoints.senderHost, port: NetworkConfig.ackPort)
+                self.log.write(.info, "发送端已连接，正在等待真实首帧")
             }
         }
         videoReceiver.onDisconnected = { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.waitingForFirstFrame = false
+                self.cursorReceiver.endSession()
+                self.ackSender?.stop()
+                self.ackSender = nil
                 self.log.write(.info, "发送端已断开，自动恢复 iMac 原生桌面")
                 self.hideCast()
             }
@@ -117,6 +145,7 @@ public final class ReceiverEngine {
         NSApp.presentationOptions = [.hideDock, .hideMenuBar, .disableCursorLocationAssistance]
         NSApp.activate(ignoringOtherApps: true)
         window.orderFrontRegardless()
+        cursorWindow.orderFrontRegardless()
         hideNativeCursorIfNeeded()
         if powerAssertion.start() {
             log.write(.info, "电源断言已生效")
@@ -134,12 +163,15 @@ public final class ReceiverEngine {
             log.write(.error, "hideCast() 在 prepareWindow() 之前被调用了")
             return
         }
+        displayView.resetVideo()
+        cursorOverlayView.hideCursor()
+        formatDescription = nil
         guard isCasting else { return }
         isCasting = false
         immersiveModeEnabled = false
         NSApp.presentationOptions = []
-        displayView.hideCursor()
         window.orderOut(nil)
+        cursorWindow.orderOut(nil)
         showNativeCursorIfNeeded()
         powerAssertion.stop()
         state = .listening
@@ -150,6 +182,7 @@ public final class ReceiverEngine {
         guard window != nil, immersiveModeEnabled else { return }
         window.level = .screenSaver
         window.orderFrontRegardless()
+        cursorWindow.orderFrontRegardless()
         hideNativeCursorIfNeeded()
     }
 
@@ -157,12 +190,18 @@ public final class ReceiverEngine {
         guard window != nil, immersiveModeEnabled else { return }
         showNativeCursorIfNeeded()
         window.level = .floating
+        cursorWindow.orderOut(nil)
     }
 
     public func shutdown() {
+        videoReceiver.stop()
+        cursorReceiver.stop()
+        ackSender?.stop()
+        ackSender = nil
         showNativeCursorIfNeeded()
         NSApp.presentationOptions = []
         powerAssertion.stop()
+        cursorWindow?.orderOut(nil)
         log.write(.info, "正在关闭")
     }
 
@@ -172,19 +211,27 @@ public final class ReceiverEngine {
         }
         guard let formatDescription,
               let sampleBuffer = SampleBufferBuilder.sampleBuffer(payload: frame.payload, formatDescription: formatDescription) else { return }
-        DispatchQueue.main.async { [weak self] in self?.displayView.enqueue(sampleBuffer) }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.displayView.enqueue(sampleBuffer)
+            if self.waitingForFirstFrame {
+                self.waitingForFirstFrame = false
+                self.log.write(.info, "已收到真实首帧，开始显示投屏")
+                self.showCast()
+            }
+        }
     }
 
     private func handleCursor(_ packet: CursorPacket) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if packet.isVisible {
-                self.displayView.updateCursor(normalizedX: CGFloat(packet.x) / CGFloat(self.cursorSpaceWidth),
-                                               normalizedY: CGFloat(packet.y) / CGFloat(self.cursorSpaceHeight))
+                self.cursorOverlayView.updateCursor(normalizedX: CGFloat(packet.x) / CGFloat(self.cursorSpaceWidth),
+                                                    normalizedY: CGFloat(packet.y) / CGFloat(self.cursorSpaceHeight))
             } else {
-                self.displayView.hideCursor()
+                self.cursorOverlayView.hideCursor()
             }
-            self.ackSender.send(AckPacket(sequence: packet.sequence))
+            self.ackSender?.send(AckPacket(sequence: packet.sequence))
         }
     }
 

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import M2MSenderCore
 import M2MReceiverCore
@@ -10,14 +11,31 @@ final class AppState: ObservableObject {
     @Published private(set) var lastEvents: [String] = []
     @Published private(set) var isBusy = false
     @Published private(set) var isRunning = false
+    @Published private(set) var isQuitting = false
 
     private let roleStore = RoleStore()
+    private let log = EventLog(role: "app")
+    private let lifecycleScripts = PeerLifecycleScripts()
+    private let controlServer = PeerControlServer()
     private var senderEngine: SenderEngine?
     private var receiverEngine: ReceiverEngine?
     private let maxEvents = 5
+    private var didPrepareForTermination = false
 
     init() {
-        role = roleStore.savedRole
+        if let requestedRole = roleStore.roleFromLaunchArguments {
+            roleStore.savedRole = requestedRole
+            role = requestedRole
+        } else {
+            role = roleStore.savedRole
+        }
+
+        do {
+            try controlServer.start { [weak self] in self?.handlePeerQuitRequest() }
+        } catch {
+            pushEvent("双机退出控制启动失败：\(error)")
+        }
+
         if let role { activateEngine(for: role) }
     }
 
@@ -53,10 +71,10 @@ final class AppState: ObservableObject {
                 Task { @MainActor in self?.applySenderState(state) }
             }
             senderEngine = engine
-            isBusy = true
+            statusText = "待投屏"
             Task {
-                _ = await engine.prepareVirtualDisplay(width: 1920, height: 1080, backingScale: 2)
-                isBusy = false
+                let startResult = await lifecycleScripts.startReceiver()
+                reportLifecycleResult(startResult, successMessage: "iMac 接收端已启动")
             }
         case .receiver:
             let engine = ReceiverEngine()
@@ -91,9 +109,13 @@ final class AppState: ObservableObject {
         Task {
             switch role {
             case .sender:
-                await senderEngine?.start(receiverHost: Endpoints.receiverHost)
+                guard let senderEngine else { break }
+                let prepared = await senderEngine.prepareVirtualDisplay(width: 1920, height: 1080, backingScale: 2)
+                if prepared {
+                    await senderEngine.start(receiverHost: Endpoints.receiverHost)
+                }
             case .receiver:
-                receiverEngine?.showCast()
+                pushEvent("接收端将在收到真实首帧后自动显示")
             }
             isBusy = false
         }
@@ -110,6 +132,77 @@ final class AppState: ObservableObject {
                 receiverEngine?.hideCast()
             }
             isBusy = false
+        }
+    }
+
+    /// 当发送端从 Applications 启动或已运行的 App 被再次打开时，确保 iMac 的
+    /// 正式接收端 App 已经存在并运行。接收端本身不反向启动发送端，因为 MacBook
+    /// 没有开启远程登录；日常入口固定为 MacBook Pro 的 Applications。
+    func ensureReceiverIsRunning() {
+        guard role == .sender, !isQuitting else { return }
+        Task {
+            let result = await lifecycleScripts.startReceiver()
+            reportLifecycleResult(result, successMessage: "已确认 iMac 接收端运行")
+        }
+    }
+
+    /// 菜单栏的“退出 M2M Display”会先请求另一端正常退出，再终止本机。即使
+    /// 对端已经离线，本机也必须继续退出，不能让一次网络故障把 App 锁在后台。
+    func quitAll() {
+        guard !isQuitting else { return }
+        isQuitting = true
+        pushEvent("正在退出两台 Mac 上的 M2M Display")
+        log.write(.info, "用户请求退出两台 Mac 上的 M2M Display")
+
+        Task {
+            if let role {
+                let peerHost = role == .sender ? Endpoints.receiverHost : Endpoints.senderHost
+                let result = await lifecycleScripts.stopPeer(host: peerHost)
+                reportLifecycleResult(result, successMessage: "另一端已收到退出请求")
+            }
+            await prepareForTermination()
+            NSApp.terminate(nil)
+        }
+    }
+
+    /// AppKit 退出委托会等待这里完成后才真正结束进程，确保抓屏、网络、沉浸窗口
+    /// 与原生光标都恢复到未启动 M2M Display 时的状态。
+    func prepareForTermination() async {
+        guard !didPrepareForTermination else { return }
+        didPrepareForTermination = true
+        log.write(.info, "正在执行 App 正常退出收尾")
+        controlServer.stop()
+
+        switch role {
+        case .sender:
+            await senderEngine?.stop()
+        case .receiver:
+            receiverEngine?.shutdown()
+        case nil:
+            break
+        }
+        log.write(.info, "App 正常退出收尾完成")
+    }
+
+    var isPreparedForTermination: Bool { didPrepareForTermination }
+
+    private func handlePeerQuitRequest() {
+        guard !isQuitting else { return }
+        isQuitting = true
+        pushEvent("收到另一台 Mac 的退出请求")
+        log.write(.info, "收到另一台 Mac 的退出请求")
+        Task {
+            await prepareForTermination()
+            NSApp.terminate(nil)
+        }
+    }
+
+    private func reportLifecycleResult(_ result: LifecycleScriptResult, successMessage: String) {
+        if result.succeeded {
+            pushEvent(successMessage)
+        } else {
+            let detail = result.detail.isEmpty ? "未知错误" : result.detail
+            pushEvent("双机操作失败：\(detail)")
         }
     }
 

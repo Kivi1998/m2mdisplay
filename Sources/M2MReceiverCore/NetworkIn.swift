@@ -70,6 +70,7 @@ final class VideoReceiver {
     private func finishConnection(_ finishedConnection: NWConnection) {
         guard connection === finishedConnection else { return }
         finishedConnection.stateUpdateHandler = nil
+        finishedConnection.cancel()
         connection = nil
         buffer.removeAll()
         onDisconnected?()
@@ -107,6 +108,7 @@ final class CursorReceiver {
     private var listener: NWListener?
     private var connection: NWConnection?
     private var lastSequence: UInt32?
+    private var acceptingSession = false
     var onCursor: ((CursorPacket) -> Void)?
 
     func start(port: UInt16) throws {
@@ -115,6 +117,10 @@ final class CursorReceiver {
         let listener = try NWListener(using: params, on: nwPort)
         listener.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
+            guard self.acceptingSession else {
+                conn.cancel()
+                return
+            }
             let previousConnection = self.connection
             self.connection = conn
             self.lastSequence = nil
@@ -125,6 +131,23 @@ final class CursorReceiver {
         }
         listener.start(queue: .main)
         self.listener = listener
+    }
+
+    /// 视频连接建立后才接受该会话的光标包，避免停止投屏后的迟到 UDP 包重新留下
+    /// 一个无效对端。每次新会话同时清空序列号，允许发送端从较小序号重新开始。
+    func beginSession() {
+        endSession()
+        acceptingSession = true
+    }
+
+    /// 只结束当前光标会话，保留 UDP 监听器等待下一次投屏。
+    func endSession() {
+        acceptingSession = false
+        let activeConnection = connection
+        connection = nil
+        activeConnection?.stateUpdateHandler = nil
+        activeConnection?.cancel()
+        lastSequence = nil
     }
 
     private func receiveDatagram(on connection: NWConnection) {
@@ -148,12 +171,8 @@ final class CursorReceiver {
     }
 
     func stop() {
-        let activeConnection = connection
-        connection = nil
-        activeConnection?.stateUpdateHandler = nil
-        activeConnection?.cancel()
+        endSession()
         listener?.cancel()
         listener = nil
-        lastSequence = nil
     }
 }

@@ -28,6 +28,11 @@ let package = Package(
             dependencies: ["M2MShared", "CGVirtualDisplayShim"],
             path: "Sources/M2MSenderCore"
         ),
+        .testTarget(
+            name: "M2MSenderCoreTests",
+            dependencies: ["M2MSenderCore"],
+            path: "Tests/M2MSenderCoreTests"
+        ),
         .executableTarget(
             name: "M2MSenderCLI",
             dependencies: ["M2MSenderCore", "M2MShared"],

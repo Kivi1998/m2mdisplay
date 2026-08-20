@@ -30,6 +30,13 @@ final class VirtualDisplay {
         }
 
         let initialMode = CGDisplayCopyDisplayMode(displayID)
+        guard let builtInDisplayID = Self.builtInDisplayID(excluding: displayID) else {
+            fputs("[VirtualDisplay] ERROR: 找不到 MacBook 内置显示器\n", stderr)
+            M2MDestroyVirtualDisplay(ref)
+            return nil
+        }
+        let builtInBounds = CGDisplayBounds(builtInDisplayID)
+        let expectedVirtualOrigin = CGPoint(x: builtInBounds.width, y: 0)
         let needsModeChange = !Self.matches(
             initialMode,
             logicalWidth: logicalWidth,
@@ -38,8 +45,10 @@ final class VirtualDisplay {
             pixelHeight: pixelHeight
         )
         let needsUnmirror = CGDisplayMirrorsDisplay(displayID) != kCGNullDirectDisplay
+        let needsPlacement = CGDisplayBounds(builtInDisplayID).origin != .zero ||
+            CGDisplayBounds(displayID).origin != expectedVirtualOrigin
 
-        if needsModeChange || needsUnmirror {
+        if needsModeChange || needsUnmirror || needsPlacement {
             var config: CGDisplayConfigRef?
             guard CGBeginDisplayConfiguration(&config) == .success, let config else {
                 fputs("[VirtualDisplay] ERROR: couldn't begin display configuration\n", stderr)
@@ -90,6 +99,13 @@ final class VirtualDisplay {
             if needsUnmirror {
                 CGConfigureDisplayMirrorOfDisplay(config, displayID, kCGNullDirectDisplay)
             }
+            if needsPlacement {
+                // 新建的 CGVirtualDisplay 会默认抢占 (0,0) 并成为主屏，把 MacBook
+                // 内置屏推到负坐标。明确把内置屏固定为主屏、M2M 放到右侧，避免
+                // 菜单栏和现有 App 窗口在开始投屏时自动跑到 iMac。
+                CGConfigureDisplayOrigin(config, builtInDisplayID, 0, 0)
+                CGConfigureDisplayOrigin(config, displayID, Int32(builtInBounds.width), 0)
+            }
             let result = CGCompleteDisplayConfiguration(config, .forSession)
             if result != .success {
                 fputs("[VirtualDisplay] ERROR: display configuration failed (CGCompleteDisplayConfiguration: \(result.rawValue))\n", stderr)
@@ -103,7 +119,9 @@ final class VirtualDisplay {
               activeMode.height == logicalHeight,
               activeMode.pixelWidth == pixelWidth,
               activeMode.pixelHeight == pixelHeight,
-              CGDisplayMirrorsDisplay(displayID) == kCGNullDirectDisplay else {
+              CGDisplayMirrorsDisplay(displayID) == kCGNullDirectDisplay,
+              CGDisplayIsMain(builtInDisplayID) != 0,
+              CGDisplayBounds(displayID).origin == expectedVirtualOrigin else {
             let mode = CGDisplayCopyDisplayMode(displayID)
             fputs("[VirtualDisplay] ERROR: active mode is logical \(mode?.width ?? 0)x\(mode?.height ?? 0), pixels \(mode?.pixelWidth ?? 0)x\(mode?.pixelHeight ?? 0); expected logical \(logicalWidth)x\(logicalHeight), pixels \(pixelWidth)x\(pixelHeight)\n", stderr)
             M2MDestroyVirtualDisplay(ref)
@@ -117,6 +135,16 @@ final class VirtualDisplay {
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
         print("[VirtualDisplay] active Retina mode: looks like \(logicalWidth)x\(logicalHeight), backing pixels \(pixelWidth)x\(pixelHeight)")
+    }
+
+    private static func builtInDisplayID(excluding excludedID: CGDirectDisplayID) -> CGDirectDisplayID? {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success else { return nil }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &displays, &count) == .success else { return nil }
+        return displays.prefix(Int(count)).first {
+            $0 != excludedID && CGDisplayIsBuiltin($0) != 0
+        }
     }
 
     private static func findMode(

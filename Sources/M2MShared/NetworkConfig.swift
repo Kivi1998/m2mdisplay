@@ -11,4 +11,12 @@ public enum NetworkConfig {
     public static let videoPort: UInt16 = 51230
     public static let cursorPort: UInt16 = 51231
     public static let ackPort: UInt16 = 51232 // 接收端 → 发送端：该光标位置刚刚完成渲染
+    public static let controlPort: UInt16 = 51233 // 两端互发正常退出请求
+}
+
+/// 双机生命周期控制只经过固定的雷雳桥接网络。使用明确的版本标记，避免端口上
+/// 的其他数据被误认为退出指令；收到指令的一端仍会走 AppKit 的正常退出收尾。
+public enum PeerControlProtocol {
+    public static let quitCommand = "M2M_DISPLAY_QUIT_V1\n"
+    public static let acknowledgement = "OK\n"
 }

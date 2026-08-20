@@ -14,7 +14,9 @@
 
 - macOS 14+ only (existing `Package.swift` platform floor — do not lower it).
 - Never run `M2MReceiverCLI`, `M2MApp` in receiver role, or anything that creates a full-screen overlay window, on the MacBook Pro — only ever test the receiver role on the real iMac (`ssh kivi@10.10.10.2`). This is a hard rule from prior incidents, not a style preference.
-- The virtual display is created once when the sender role is selected and stays alive until the app quits — never recreate it on every start/stop cycle (see spec, "虚拟显示器生命周期"; recreating it re-triggers a flaky macOS mode-activation/mirroring race found on 2026-08-14).
+- 当前实现已在 2026-08-20 根据真实使用反馈调整：虚拟显示器在“开始投屏”时创建、
+  在“停止投屏”时销毁并等待离线，使第二屏上的窗口回到 MacBook Pro 内置屏幕。
+  原计划的“保持到 App 退出”会留下不可见的幽灵桌面，已由更新后的设计规格取代。
 - Every engine-level state transition and every unexpected failure must go through `EventLog` (Task 1) — no `print`/`fputs`-only error paths in the engines.
 - Deploy/verify exactly like the rest of this project has been verified all along: `swift build -c release`, `scp` the receiver binary to the iMac, `ssh` to restart it, check the log file's mtime/line count to confirm it's actually running the new build. No test target exists yet for anything ScreenCaptureKit/CGVirtualDisplay/AppKit-dependent — those are verified by hand on real hardware, not by automated tests.
 

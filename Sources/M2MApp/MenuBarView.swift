@@ -31,6 +31,11 @@ struct MenuBarView: View {
                 Button("打开日志文件") {
                     NSWorkspace.shared.open(appState.logDirectoryURL)
                 }
+                Button("退出 M2M Display") {
+                    appState.quitAll()
+                }
+                .keyboardShortcut("q")
+                .disabled(appState.isQuitting)
             } else {
                 Text("选择这台机器的角色").font(.headline)
                 HStack {
@@ -38,6 +43,13 @@ struct MenuBarView: View {
                         Button(role.displayName) { appState.selectRole(role) }
                     }
                 }
+
+                Divider()
+                Button("退出 M2M Display") {
+                    appState.quitAll()
+                }
+                .keyboardShortcut("q")
+                .disabled(appState.isQuitting)
             }
         }
         .padding()

@@ -19,6 +19,7 @@ final class CursorReceiverTests: XCTestCase {
 
         let port: UInt16 = 54240
         try receiver.start(port: port)
+        receiver.beginSession()
 
         let firstClient = NWConnection(
             host: .ipv4(.loopback),
@@ -32,6 +33,8 @@ final class CursorReceiverTests: XCTestCase {
         )
         await fulfillment(of: [firstPacketReceived], timeout: 3)
         firstClient.cancel()
+        receiver.endSession()
+        receiver.beginSession()
 
         let secondClient = NWConnection(
             host: .ipv4(.loopback),

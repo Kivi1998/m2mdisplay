@@ -1,4 +1,5 @@
 // Sources/M2MSenderCore/SenderEngine.swift
+import CoreGraphics
 import Foundation
 import M2MShared
 
@@ -11,10 +12,9 @@ public enum SenderState: Equatable {
     case stopping
 }
 
-/// 掌管发送端整条流水线（虚拟显示器、抓屏、编码、网络、鼠标监听），对外只暴露
-/// start()/stop()。虚拟显示器由 prepareVirtualDisplay() 只创建一次并在整个
-/// 引擎生命周期内保持存活——为什么每次开始/停止都重新创建是不安全的，见设计文档
-/// 里"虚拟显示器生命周期"那一节。
+/// 掌管发送端整条流水线（虚拟显示器、抓屏、编码、网络、鼠标监听）。每次投屏前
+/// 创建虚拟显示器，停止投屏时必须销毁它；否则 macOS 仍把第二块屏幕视为在线，
+/// 放在那里的 App 窗口就会留在一个看不见也点不到的桌面上。
 public final class SenderEngine {
     public private(set) var state: SenderState = .idle {
         didSet { onStateChange?(state) }
@@ -61,6 +61,7 @@ public final class SenderEngine {
             return false
         }
         virtualDisplay = display
+        if isErrorState { state = .idle }
         log.write(.info, "虚拟显示器已就绪：看起来像 \(display.logicalWidth)x\(display.logicalHeight)，后备像素 \(display.pixelWidth)x\(display.pixelHeight)")
         return true
     }
@@ -79,17 +80,13 @@ public final class SenderEngine {
         let cursorSender = CursorSender(host: receiverHost, port: NetworkConfig.cursorPort)
         self.cursorSender = cursorSender
 
-        let mouseTap = MouseTap(virtualDisplayID: virtualDisplay.displayID, width: virtualDisplay.logicalWidth, height: virtualDisplay.logicalHeight)
+        let mouseTap = MouseTap(virtualDisplayID: virtualDisplay.displayID)
         self.mouseTap = mouseTap
         mouseTap.onPosition = { [weak self] x, y, isVisible in
             guard let self else { return }
             self.cursorSeq += 1
             self.cursorSender?.send(CursorPacket(x: x, y: y, cursorType: CursorType.arrow.rawValue, sequence: self.cursorSeq, isVisible: isVisible))
         }
-        mouseTap.onSystemInterruption = { [weak self] reason in
-            self?.log.write(.warning, "鼠标事件监听被系统关闭（\(reason)），已自动重新启用")
-        }
-
         let ackReceiver = AckReceiver()
         self.ackReceiver = ackReceiver
         do {
@@ -98,39 +95,37 @@ public final class SenderEngine {
             log.write(.warning, "确认包接收器启动失败：\(error)")
         }
 
-        if !mouseTap.start() {
-            log.write(.warning, "鼠标监听启动失败——缺少输入监控权限")
-        }
+        _ = mouseTap.start()
 
         do {
             try await videoSender.waitUntilReady()
         } catch {
             state = .error("视频连接失败：\(error)")
             log.write(.error, "视频连接失败：\(error)")
+            teardownTransport()
+            await releaseVirtualDisplay()
             return
         }
 
         guard await startCapturePipeline(retryCount: 0) else {
             await teardownCapturePipeline()
             teardownTransport()
+            await releaseVirtualDisplay()
             return
         }
         state = .running
         log.write(.info, "运行中")
     }
 
-    /// 把 guard 条件放宽到也接受 `.starting`，意味着在开始过程中调用 stop() 会把
-    /// 已经分配好的资源收拾掉，而不是静默空跑——但它并不会取消正在进行中的异步工作
-    /// （比如一次尚未完成的 videoSender.waitUntilReady()），那部分之后仍可能返回、
-    /// 短暂地把状态又设回去。这在本计划实际用到的调用方式下不是问题：命令行版本
-    /// 从不调用 stop()，图形界面在调用点上把开始/停止串行化了，不会同时触发。要真正
-    /// 修好需要给 start() 包一个可取消的 Task 句柄——如果以后有调用方真的需要，再补。
+    /// 停止不仅关闭视频和鼠标通道，还要销毁虚拟显示器。WindowServer 会在显示器
+    /// 离线时把其上的窗口迁回仍在线的内置屏幕，因此停止后不会留下“幽灵桌面”。
     public func stop() async {
-        guard state == .running || state == .reconnecting || state == .starting || isErrorState else { return }
+        guard virtualDisplay != nil || state == .running || state == .reconnecting || state == .starting || isErrorState else { return }
         state = .stopping
         log.write(.info, "正在停止（用户操作）")
         await teardownCapturePipeline()
         teardownTransport()
+        await releaseVirtualDisplay()
         state = .idle
         log.write(.info, "已停止")
     }
@@ -148,14 +143,38 @@ public final class SenderEngine {
         ackReceiver = nil
     }
 
+    /// 销毁接口返回后，WindowServer 仍可能需要几秒才把显示器从活动列表中移除。
+    /// `CGDisplayIsOnline` 对已经销毁的虚拟显示器仍可能长期返回真，不能用来判断
+    /// 迁移是否完成；这里以活动显示器列表为准，再向界面报告“已停止”。
+    private func releaseVirtualDisplay() async {
+        guard let displayID = virtualDisplay?.displayID else { return }
+        virtualDisplay = nil
+
+        for _ in 0..<300 {
+            if !Self.isActiveDisplay(displayID) {
+                log.write(.info, "虚拟显示器已销毁，窗口将回到内置屏幕")
+                return
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        log.write(.warning, "虚拟显示器销毁后仍在 WindowServer 活动列表中")
+    }
+
+    private static func isActiveDisplay(_ displayID: CGDirectDisplayID) -> Bool {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success else { return true }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &displays, &count) == .success else { return true }
+        return displays.prefix(Int(count)).contains(displayID)
+    }
+
     private var isErrorState: Bool {
         if case .error = state { return true }
         return false
     }
 
-    /// （重新）创建 ScreenCaptureKit 抓屏流和编码器。start() 和下面的意外中断恢复
-    /// 逻辑都会调用它——这两处是抓屏失败之后唯一需要重建的部分，虚拟显示器和网络
-    /// 连接都不受影响、原样保留。
+    /// （重新）创建 ScreenCaptureKit 抓屏流和编码器。投屏运行期间的一次抓屏中断
+    /// 只重建这两项；若连续恢复失败，外层会断开网络并销毁虚拟显示器。
     private func startCapturePipeline(retryCount: Int) async -> Bool {
         guard let virtualDisplay else { return false }
         guard let encoder = try? VideoEncoder(width: virtualDisplay.pixelWidth, height: virtualDisplay.pixelHeight, frameRate: 60, averageBitrateBps: 60_000_000) else {
@@ -212,6 +231,7 @@ public final class SenderEngine {
             } else {
                 await teardownCapturePipeline()
                 teardownTransport()
+                await releaseVirtualDisplay()
                 log.write(.error, "抓屏恢复失败，已断开投屏并通知 iMac 恢复原生桌面")
             }
         }
