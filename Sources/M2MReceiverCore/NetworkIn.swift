@@ -130,6 +130,96 @@ final class VideoReceiver {
     }
 }
 
+struct ReceivedAudioFrame {
+    let header: AudioFrameHeader
+    let payload: Data
+}
+
+/// 跟 VideoReceiver 同一套 TCP 长度前缀分帧读取的做法（自己维护 buffer 拼包，
+/// 同时处理半包和粘包），包头更简单——没有 avcC 那部分。
+final class AudioReceiver {
+    private var listener: NWListener?
+    private var connection: NWConnection?
+    private var buffer = Data()
+    var onFrame: ((ReceivedAudioFrame) -> Void)?
+
+    func start(port: UInt16) throws {
+        let params = NWParameters.tcp
+        let nwPort = NWEndpoint.Port(rawValue: port)!
+        let listener = try NWListener(using: params, on: nwPort)
+        listener.newConnectionHandler = { [weak self] conn in
+            guard let self else { return }
+            let previousConnection = self.connection
+            self.connection = conn
+            self.buffer.removeAll()
+            previousConnection?.stateUpdateHandler = nil
+            previousConnection?.cancel()
+            conn.stateUpdateHandler = { [weak self, weak conn] state in
+                guard let self, let conn, self.connection === conn else { return }
+                if case .failed = state { self.finishConnection(conn) }
+                if case .cancelled = state { self.finishConnection(conn) }
+            }
+            conn.start(queue: .main)
+            self.receiveMore(on: conn)
+        }
+        listener.start(queue: .main)
+        self.listener = listener
+    }
+
+    private func receiveMore(on connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 262_144) { [weak self, weak connection] data, _, isComplete, error in
+            guard let connection else { return }
+            guard let self else { return }
+            guard self.connection === connection else { return }
+            if let data, !data.isEmpty {
+                self.buffer.append(data)
+                self.drainBuffer()
+            }
+            if let error {
+                fputs("AudioReceiver receive error: \(error)\n", stderr)
+                self.finishConnection(connection)
+                return
+            }
+            if isComplete {
+                self.finishConnection(connection)
+                return
+            }
+            self.receiveMore(on: connection)
+        }
+    }
+
+    private func finishConnection(_ finishedConnection: NWConnection) {
+        guard connection === finishedConnection else { return }
+        finishedConnection.stateUpdateHandler = nil
+        finishedConnection.cancel()
+        connection = nil
+        buffer.removeAll()
+    }
+
+    private func drainBuffer() {
+        while true {
+            guard buffer.count >= AudioFrameHeader.byteSize else { return }
+            guard let header = AudioFrameHeader.decode(buffer) else { return }
+            let needed = AudioFrameHeader.byteSize + Int(header.payloadLength)
+            guard buffer.count >= needed else { return }
+
+            let payload = buffer.subdata(in: AudioFrameHeader.byteSize..<needed)
+            onFrame?(ReceivedAudioFrame(header: header, payload: payload))
+            buffer.removeSubrange(0..<needed)
+        }
+    }
+
+    func stop() {
+        let activeConnection = connection
+        connection = nil
+        activeConnection?.stateUpdateHandler = nil
+        activeConnection?.cancel()
+        listener?.cancel()
+        listener = nil
+        buffer.removeAll()
+    }
+}
+
 final class CursorReceiver {
     private var listener: NWListener?
     private var connection: NWConnection?
