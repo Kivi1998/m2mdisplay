@@ -161,6 +161,9 @@ public final class ReceiverEngine {
             }
         }
         videoReceiver.onFrame = { [weak self] frame in self?.handle(frame) }
+        videoReceiver.onListenerFailed = { [weak self] error in
+            self?.log.write(.error, "视频监听器异步绑定失败（端口可能被占用/处于 TIME_WAIT）：\(error)")
+        }
         cursorReceiver.onCursor = { [weak self] packet in self?.handleCursor(packet) }
 
         do {

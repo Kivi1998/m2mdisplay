@@ -88,6 +88,24 @@ scripts/package-m2mapp.sh
 
 ## 已知的坑（排查过、别再踩一遍）
 
+- **视频端口一度死活绑不上，报 `Address already in use`，重启 iMac 就好了**：
+  真实发生过。一开始怀疑是 `NWListener` 快速重启时的 TIME_WAIT 竞态（顺手
+  加上了 `allowLocalEndpointReuse`/强制 IPv4，但没解决问题——这两个改动
+  本身没坏处，留着了）。用 `sudo lsof -i :端口号` 查到真凶是 root 权限的
+  系统进程 `remoted`（隔空控制/接续互通那类 Continuity 功能的后台守护
+  进程），连接对端正是这两台 Mac 自己；iMac 上还顺带发现一张不在
+  `networksetup -listallhardwareports` 里的虚拟网卡（MAC 地址是本地生成的，
+  不是真实硬件），是本机装的 UURemote 远程控制软件自己开的私有隧道，
+  `remoted` 选路由时大概率顺着这条隧道走，把连接落在了我们也在用的端口上。
+  关键是这个连接对应的 `remoted` 进程 PID 很小、跟上次开机时间对得上——
+  是那次开机以来**连续跑了 6 天多、中途从没重启过**的进程，这条卡住的连接
+  只是它这 6 天里某次借道 UURemote 虚拟网卡握手时留下的**一次性残留状态**，
+  不是 UURemote 每次开机都会重新触发的固定行为（重启 iMac 后 UURemote 照样
+  随开机启动，端口照样是好的，证实了这点）。所以不是"这个端口天生容易被
+  系统服务抢"，只是 `remoted` 长期不重启导致的偶发累积残留，**没有改动
+  `NetworkConfig.swift` 里的端口号**——真出现类似"莫名绑不上"的情况，先用
+  `sudo lsof -i :端口号` 查是谁占的（不加 `sudo` 经常看不到 root 权限进程
+  持有的连接，容易误判成"孤儿连接"），重启一下相关机器通常就能清掉。
 - **`AppState.init()` 里同步调用 `NSApp.setActivationPolicy(...)` 会崩溃**：
   实测过——`AppState.init()` 是在 `M2MApplicationDelegate.init()` 里同步构造
   的，而这又发生在 SwiftUI `App.main()` 内部构造 `NSApplicationDelegateAdaptor`

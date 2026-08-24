@@ -14,8 +14,13 @@ final class PeerControlServer {
         guard listener == nil else { return }
         self.onQuitRequested = onQuitRequested
 
+        let params = NWParameters.tcp
+        params.allowLocalEndpointReuse = true // 跟 VideoReceiver 一样统一允许端口复用，避免同一类坑
+        if let ipOptions = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ipOptions.version = .v4 // 跟 VideoReceiver 一样强制只走 IPv4，避开 IPv6 双栈绑定冲突
+        }
         let port = NWEndpoint.Port(rawValue: NetworkConfig.controlPort)!
-        let listener = try NWListener(using: .tcp, on: port)
+        let listener = try NWListener(using: params, on: port)
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return }
             let identifier = ObjectIdentifier(connection)

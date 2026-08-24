@@ -15,11 +15,37 @@ final class VideoReceiver {
     var onFrame: ((ReceivedFrame) -> Void)?
     var onConnected: (() -> Void)?
     var onDisconnected: (() -> Void)?
+    /// 监听器自己（不是某一条具体连接）异步失败时触发，比如端口没能真正绑定
+    /// 成功。之前这里完全没人监听，绑定失败了也不会报错，日志照样打印"监听
+    /// 中"——调用方必须把这个接上日志，不能让它继续静默失效。
+    var onListenerFailed: ((Error) -> Void)?
 
     func start(port: UInt16) throws {
         let params = NWParameters.tcp
+        // 不指定端口以外的信息时，NWListener 默认双栈绑定（IPv4 + IPv6）。这个
+        // 项目从头到尾只用固定的 IPv4 地址（10.10.10.1/10.10.10.2），根本不需要
+        // IPv6；已经实测踩过一次真实故障：iMac 的雷雳桥接网卡上有个 IPv6
+        // 链路本地地址（fe80::…）的连接卡在 ESTABLISHED 状态（`netstat -an`
+        // 能看到，但 `lsof` 找不到对应进程——是内核里的孤儿连接，不是我们的
+        // 进程持有的），这会让双栈绑定在异步阶段直接报 "Address already in
+        // use"（POSIXErrorCode 48）。而且失败不会报错给调用方，因为下面原来
+        // 没有监听"监听器本身"的状态（只监听了每条连接的状态），日志照样打印
+        // "监听中"，实际上根本没有真正监听成功——排查时先怀疑过 TIME_WAIT
+        // （所以顺手把 allowLocalEndpointReuse 也开了，等价于 SO_REUSEADDR），
+        // 但那个连接是 ESTABLISHED 不是 TIME_WAIT，SO_REUSEADDR 语义上就不该
+        // 管用，实测也确实没用；真正管用的是把协议栈强制成只走 IPv4，从根上
+        // 避开那个 IPv6 冲突。
+        params.allowLocalEndpointReuse = true
+        if let ipOptions = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ipOptions.version = .v4
+        }
         let nwPort = NWEndpoint.Port(rawValue: port)!
         let listener = try NWListener(using: params, on: nwPort)
+        listener.stateUpdateHandler = { [weak self] state in
+            if case .failed(let error) = state {
+                self?.onListenerFailed?(error)
+            }
+        }
         listener.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
             let previousConnection = self.connection
@@ -113,6 +139,10 @@ final class CursorReceiver {
 
     func start(port: UInt16) throws {
         let params = NWParameters.udp
+        params.allowLocalEndpointReuse = true // 跟 VideoReceiver 一样统一允许端口复用，避免同一类坑
+        if let ipOptions = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ipOptions.version = .v4 // 跟 VideoReceiver 一样强制只走 IPv4，避开 IPv6 双栈绑定冲突
+        }
         let nwPort = NWEndpoint.Port(rawValue: port)!
         let listener = try NWListener(using: params, on: nwPort)
         listener.newConnectionHandler = { [weak self] conn in
