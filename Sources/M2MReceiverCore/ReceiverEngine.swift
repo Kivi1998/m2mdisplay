@@ -70,8 +70,6 @@ public final class ReceiverEngine {
     private var nativeCursorController: NativeCursorController!
     private let videoReceiver = VideoReceiver()
     private let cursorReceiver = CursorReceiver()
-    private let audioReceiver = AudioReceiver()
-    private let audioPlayer = AudioPlayer()
     private var formatDescription: CMFormatDescription?
     private let cursorSpaceWidth = 1920
     private let cursorSpaceHeight = 1080
@@ -167,7 +165,6 @@ public final class ReceiverEngine {
                 self.cursorReceiver.beginSession()
                 self.ackSender?.stop()
                 self.ackSender = AckSender(host: Endpoints.senderHost, port: NetworkConfig.ackPort)
-                self.audioPlayer.start()
                 self.log.write(.info, "发送端已连接，正在等待真实首帧")
             }
         }
@@ -178,7 +175,6 @@ public final class ReceiverEngine {
                 self.cursorReceiver.endSession()
                 self.ackSender?.stop()
                 self.ackSender = nil
-                self.audioPlayer.stop()
                 self.log.write(.info, "发送端已断开，自动恢复 iMac 原生桌面")
                 self.hideCast()
             }
@@ -188,17 +184,12 @@ public final class ReceiverEngine {
             self?.log.write(.error, "视频监听器异步绑定失败（端口可能被占用/处于 TIME_WAIT）：\(error)")
         }
         cursorReceiver.onCursor = { [weak self] packet in self?.handleCursor(packet) }
-        // 音频回调本来就在 .main 队列上（跟 AudioReceiver 内部 NWConnection 用的
-        // 队列一致），不需要再 DispatchQueue.main.async 转发一次——低延迟场景下
-        // 能省一次调度就省一次。
-        audioReceiver.onFrame = { [weak self] frame in self?.audioPlayer.enqueue(frame.payload) }
 
         do {
             try videoReceiver.start(port: NetworkConfig.videoPort)
             try cursorReceiver.start(port: NetworkConfig.cursorPort)
-            try audioReceiver.start(port: NetworkConfig.audioPort)
             state = .listening
-            log.write(.info, "监听中 — 视频端口:\(NetworkConfig.videoPort) 光标端口:\(NetworkConfig.cursorPort) 音频端口:\(NetworkConfig.audioPort)")
+            log.write(.info, "监听中 — 视频端口:\(NetworkConfig.videoPort) 光标端口:\(NetworkConfig.cursorPort)")
         } catch {
             state = .error("监听器启动失败：\(error)")
             log.write(.error, "监听器启动失败：\(error)")
@@ -285,8 +276,6 @@ public final class ReceiverEngine {
     public func shutdown() {
         videoReceiver.stop()
         cursorReceiver.stop()
-        audioReceiver.stop()
-        audioPlayer.stop()
         ackSender?.stop()
         ackSender = nil
         localInputGuard.stop()

@@ -105,42 +105,6 @@ public struct FrameHeader {
     }
 }
 
-/// 音频通道：跟视频一样走 TCP、定长包头 + payload 的分帧方式——雷雳桥接链路
-/// 几乎不丢包，不需要像 UDP 那样为丢包设计容错。不携带采样率/声道数/位深这些
-/// 格式信息：发送端固定转换成 `AudioWireFormat` 那份"交错 Float32、48kHz、
-/// 双声道"格式再发出去，接收端按同一份写死的格式重建，不需要每包都传格式。
-public struct AudioFrameHeader {
-    public var payloadLength: UInt32
-    public var presentationTimeNanos: UInt64
-
-    public init(payloadLength: UInt32, presentationTimeNanos: UInt64) {
-        self.payloadLength = payloadLength
-        self.presentationTimeNanos = presentationTimeNanos
-    }
-
-    public static let byteSize = MemoryLayout<UInt32>.size + MemoryLayout<UInt64>.size
-
-    public func encoded() -> Data {
-        // 逐字段手工打包，不能用 Data(bytes: &self, count:) 直接复制结构体内存——
-        // 原因见 CursorPacket.encoded() 的注释，字段间的对齐填充会让编解码对不上。
-        var data = Data(capacity: Self.byteSize)
-        var len = payloadLength
-        var ts = presentationTimeNanos
-        data.append(Data(bytes: &len, count: MemoryLayout<UInt32>.size))
-        data.append(Data(bytes: &ts, count: MemoryLayout<UInt64>.size))
-        return data
-    }
-
-    public static func decode(_ data: Data) -> AudioFrameHeader? {
-        guard data.count >= byteSize else { return nil }
-        return data.withUnsafeBytes { raw -> AudioFrameHeader in
-            let len = raw.loadUnaligned(fromByteOffset: 0, as: UInt32.self)
-            let ts = raw.loadUnaligned(fromByteOffset: 4, as: UInt64.self)
-            return AudioFrameHeader(payloadLength: len, presentationTimeNanos: ts)
-        }
-    }
-}
-
 /// 接收端在主线程提交光标图层位置更新后发回发送端，而不是刚收到网络数据时发送。
 /// 发送端可使用自己的单机时钟测量“鼠标移动 → 屏幕像素变化”的真实端到端延迟。
 /// 因为测量的是往返时间，所以无需同步两台机器的时钟。

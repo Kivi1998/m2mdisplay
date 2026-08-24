@@ -21,17 +21,12 @@ Dock、菜单栏都隐藏掉。这个规则不是随便定的——已经因为�
 
 - `M2MSenderCore` / `M2MSenderCLI`：发送端。创建虚拟显示器
   （`CGVirtualDisplay` 私有 API）、用 ScreenCaptureKit 抓屏、VideoToolbox
-  硬件编码、通过 Network.framework 把视频发给接收端；同时定时轮询全局鼠标
-  位置（`MouseTap.swift`，不是 CGEventTap——见下面"已知的坑"），走一条独立
-  的、不经编解码的 UDP 通道把光标坐标和类型实时发过去；系统音频也用
-  ScreenCaptureKit（`SCStreamOutputType.audio`）同一个 stream 里顺带采集，
-  转换成固定格式后走另一条独立 TCP 通道发出去（`AudioSampleConverter.swift`/
-  `AudioSender`）。光标和音频这两条独立通道、不经视频编解码管线，是延迟远
-  低于 AirPlay 的核心原因。
-- `M2MReceiverCore` / `M2MReceiverCLI`：接收端。监听视频/光标/音频端口，
-  VideoToolbox 硬解码后铺满整个物理屏幕显示；收到光标坐标和类型后在独立
-  悬浮窗口（`CursorOverlayView`）里叠加渲染对应形状（箭头/手形/工字）；
-  收到音频包后用 `AVAudioEngine`（`AudioPlayer.swift`）播放到默认扬声器。
+  硬件编码、通过 Network.framework 把视频发给接收端；同时用 CGEventTap
+  监听全局鼠标位置，走一条独立的、不经编解码的 UDP 通道把光标坐标实时发
+  过去——这条独立通道是延迟远低于 AirPlay 的核心原因。
+- `M2MReceiverCore` / `M2MReceiverCLI`：接收端。监听视频/光标端口，
+  VideoToolbox 硬解码后铺满整个物理屏幕显示，收到光标坐标和类型后在独立
+  悬浮窗口（`CursorOverlayView`）里叠加渲染对应形状（箭头/手形/工字）。
 - `M2MApp`：SwiftUI 菜单栏图形界面，两台机器装同一个 App，启动时选角色，
   可以随时开始/停止投屏。用 `scripts/package-m2mapp.sh` 打包成真正的
   `.app`（SPM 不会自动做这件事），图标源文件在 `Resources/M2MApp.icns`。
@@ -46,9 +41,8 @@ Dock、菜单栏都隐藏掉。这个规则不是随便定的——已经因为�
   断言挡住 iMac 休眠（`PowerAssertion.swift`），用户忘记手动停止投屏就睡
   觉了，两台 Mac 的屏幕会一直亮一整晚。
 - `M2MShared`：两端共用的协议定义（`CursorPacket`/`FrameHeader`/
-  `AudioFrameHeader`/`AckPacket`）、音频线上格式 `AudioWireFormat`（交错
-  Float32、48kHz、双声道，两端写死同一份，音频包不需要每包带格式信息）和
-  持久化事件日志 `EventLog`（写到 `~/Library/Logs/M2MDisplay/`）。
+  `AckPacket`）和持久化事件日志 `EventLog`（写到
+  `~/Library/Logs/M2MDisplay/`）。
 
 ## Git 提交规范
 
@@ -177,19 +171,6 @@ scripts/package-m2mapp.sh
   重新显示光标的逻辑。这个吞事件的权限比 `MouseTap` 当年用的"输入监控"高一
   级，需要"辅助功能"（Accessibility），跟下面"屏幕录制权限"一样按 Bundle ID
   独立授权，第一次用要单独去加。
-- **`CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer` 在 Swift 里的
-  参数名跟 C 头文件对不上**：C 头文件里叫
-  `blockBufferStructureAllocator`/`blockBufferBlockAllocator`，Swift 导入后
-  实际的参数标签是 `blockBufferAllocator`/`blockBufferMemoryAllocator`——照抄
-  头文件注释里的名字写代码编译不过，得让编译器报错提示或者直接看
-  `AudioSampleConverter.swift` 里已经写对的版本抄。这是从
-  ScreenCaptureKit 音频采集（`SCStreamOutputType.audio`）给的 `CMSampleBuffer`
-  里取出 `AudioBufferList`/裸 PCM 字节的标准两段式调用（先传 `bufferListOut:
-  nil` 问需要多大，自己分配内存，再传真正的指针拿数据）；用来构造
-  `AVAudioPCMBuffer` 时选的是 `bufferListNoCopy:` 这个初始化方法，
-  不会拷贝数据，所以 `blockBuffer`（真正持有采样字节的对象）必须在读完数据
-  前一直存活——它是函数局部变量，函数体内读取和 `AVAudioConverter` 转换都
-  发生在返回之前，天然安全，不需要额外做什么。
 - **`.app` 打包后一秒左右自己退出**：如果 `.build/M2MApp.app` 和
   `/Applications/M2MApp.app` 共用同一个 `CFBundleIdentifier`（比如测试时
   直接 `open` 过 build 目录里那份），macOS 26 的 Control Center 会把
@@ -201,8 +182,4 @@ scripts/package-m2mapp.sh
   因为借用了启动它的终端 App（比如 Warp）已经被授权过的权限；
   `M2MApp.app` 是独立身份，第一次用需要单独去"系统设置 > 隐私与安全性 >
   屏幕录制"里手动加一次。如果打包时改了 Bundle ID，之前加过的授权会失效，
-  需要重新加。系统音频采集（`SCStreamConfiguration.capturesAudio`）没有单独
-  申请新权限，理论上跟屏幕录制共用同一个 TCC 授权（新版 macOS 系统设置里这
-  一项经常直接叫"屏幕与系统音频录制"）——第一次实测有没有声音时，如果完全
-  没声音且日志里没报错，先怀疑是不是这个权限没生效，去系统设置里确认一下，
-  不一定是代码问题。
+  需要重新加。
