@@ -100,6 +100,22 @@ public final class ReceiverEngine {
         return CGDirectDisplayID(number.uint32Value)
     }
 
+    /// 锁屏时 `CGShieldingWindowLevel()` 会返回锁屏遮罩窗口的层级（一个很高的
+    /// 数值），没锁屏时返回值很低（不能直接拿来用）；每次显示投屏前都重新查
+    /// 一次，跟原来的 .screenSaver 取较大值，这样锁屏状态下窗口能盖在锁屏遮罩
+    /// 之上，没锁屏时行为跟之前完全一样。这是苹果公开文档记录的 API，不是私有
+    /// 调用。真机验证过一半：一旦触发了真正的登录窗口认证界面（比如用户
+    /// 手动执行"锁定屏幕"，或者"锁定屏幕"设置里密码延时不是"永不"），那是
+    /// 完全独立的高权限子系统，任何第三方窗口层级都盖不过去，这是苹果刻意
+    /// 做的安全边界（防止第三方 App 伪造假密码框钓鱼），不是这里能绕开的。
+    /// 这个技巧对"自动空闲触发、且系统设置里密码延时已经改成永不"的场景是否
+    /// 真能生效，还没有真机验证过，等测试结果确认。
+    private func castingWindowLevel() -> NSWindow.Level {
+        let shieldLevel = Int(CGShieldingWindowLevel())
+        let baseLevel = NSWindow.Level.screenSaver.rawValue
+        return NSWindow.Level(rawValue: max(baseLevel, shieldLevel + 1))
+    }
+
     /// 创建（初始隐藏的）覆盖窗口，并开始监听发送端的连接。App 启动时调用一次即可。
     public func prepareWindow() {
         let screen = physicalScreen()
@@ -139,6 +155,9 @@ public final class ReceiverEngine {
         videoReceiver.onConnected = { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
+                // 尽早发起唤醒——留出显示器面板真正亮起来的硬件延迟时间，
+                // 等首帧解码完调用 showCast() 时屏幕大概率已经醒了。
+                PowerAssertion.wakeDisplay()
                 self.formatDescription = nil
                 self.displayView.resetVideo()
                 self.cursorOverlayView.hideCursor()
@@ -187,7 +206,11 @@ public final class ReceiverEngine {
         guard !isCasting else { return }
         isCasting = true
         immersiveModeEnabled = true
-        window.level = .screenSaver
+        let level = castingWindowLevel()
+        window.level = level
+        // 光标覆盖窗口必须始终盖在主投屏窗口之上，否则锁屏遮罩层级一旦超过
+        // 原来写死的 .screenSaver + 1，光标就会被投屏画面挡住变得不可见。
+        cursorWindow.level = NSWindow.Level(rawValue: level.rawValue + 1)
         NSApp.setActivationPolicy(.accessory)
         window.makeKeyAndOrderFront(nil)
         NSApp.presentationOptions = [.hideDock, .hideMenuBar, .disableCursorLocationAssistance]
@@ -235,7 +258,9 @@ public final class ReceiverEngine {
 
     public func handleDidBecomeActive() {
         guard window != nil, immersiveModeEnabled else { return }
-        window.level = .screenSaver
+        let level = castingWindowLevel()
+        window.level = level
+        cursorWindow.level = NSWindow.Level(rawValue: level.rawValue + 1)
         window.orderFrontRegardless()
         cursorWindow.orderFrontRegardless()
         hideNativeCursorIfNeeded()

@@ -37,4 +37,17 @@ final class PowerAssertion {
     deinit {
         stop()
     }
+
+    /// 主动唤醒可能已经因为空闲计时器而黑屏的显示器（公开 IOKit API，不需要任何
+    /// 额外权限）。跟上面 start() 里创建的两个断言不是一回事——那两个只能防止
+    /// "以后"休眠，对"已经睡着的显示器"完全没有效果，画面照样是黑的；这个才是
+    /// 真正能让已经黑屏的显示器重新亮起来的调用，效果等价于物理碰一下鼠标。
+    static func wakeDisplay() {
+        var assertionID: IOPMAssertionID = 0
+        IOPMAssertionDeclareUserActivity(
+            "M2MReceiver is about to display an incoming cast" as CFString,
+            kIOPMUserActiveLocal,
+            &assertionID
+        )
+    }
 }
