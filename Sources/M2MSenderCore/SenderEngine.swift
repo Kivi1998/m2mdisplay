@@ -36,6 +36,7 @@ public final class SenderEngine {
     private var cursorSeq: UInt32 = 0
     private var audioSeq: UInt32 = 0
     private var audioControlSeq: UInt32 = 0
+    private var forwardAudioToReceiver = true
 
     public init() {}
 
@@ -72,12 +73,13 @@ public final class SenderEngine {
         return true
     }
 
-    public func start(receiverHost: String) async {
+    public func start(receiverHost: String, forwardAudioToReceiver: Bool = true) async {
         guard let virtualDisplay else {
             state = .error("虚拟显示器还没准备好——请先调用 prepareVirtualDisplay")
             return
         }
         guard state == .idle else { return }
+        self.forwardAudioToReceiver = forwardAudioToReceiver
         state = .starting
         log.write(.info, "正在向 \(receiverHost) 发起投屏")
 
@@ -115,6 +117,8 @@ public final class SenderEngine {
 
         // 视频握手成功后，接收端已经打开本次音频会话；这时再建立音频和音量
         // 控制连接，可避免它们抢在视频连接之前到达而被接收端当作迟到包拒绝。
+        // 这两条连接始终建立，不受"声音留在本机"这个选择影响——只有这样投屏
+        // 中途切换声音输出位置时才能直接增减 Tap，不用重新握手整条连接。
         let audioSender = AudioSender(host: receiverHost, port: NetworkConfig.audioPort)
         self.audioSender = audioSender
         let audioControlSender = AudioControlSender(host: receiverHost, port: NetworkConfig.audioControlPort)
@@ -137,15 +141,45 @@ public final class SenderEngine {
             return
         }
 
-        guard await startAudioPipeline() else {
-            await teardownCapturePipeline()
-            await teardownAudioPipeline()
-            teardownTransport()
-            await releaseVirtualDisplay()
-            return
+        if forwardAudioToReceiver {
+            guard await startAudioPipeline() else {
+                await teardownCapturePipeline()
+                await teardownAudioPipeline()
+                teardownTransport()
+                await releaseVirtualDisplay()
+                return
+            }
         }
         state = .running
-        log.write(.info, "运行中——系统声音由 iMac 内建扬声器播放")
+        log.write(.info, forwardAudioToReceiver ? "运行中——系统声音由 iMac 内建扬声器播放" : "运行中——系统声音保留在 MacBook 本机播放")
+    }
+
+    /// 投屏进行中切换声音输出位置。音频/音量控制的两条连接在 start() 里已经
+    /// 常驻建立，不受这个开关影响，所以不用重连视频、也不用重新走一遍投屏
+    /// 握手——只是增减 Tap 和音量键接管这一段。还没开始投屏时调用只是记下
+    /// 选择，等下次 start() 时生效。
+    public func setAudioForwarding(toReceiver: Bool) async {
+        guard forwardAudioToReceiver != toReceiver else { return }
+        guard state == .running || state == .reconnecting else {
+            forwardAudioToReceiver = toReceiver
+            return
+        }
+        if toReceiver {
+            forwardAudioToReceiver = true
+            guard await startAudioPipeline() else {
+                // startAudioPipeline() 内部会把 state 设成 .error，但视频/光标这时
+                // 仍然正常投屏——音频这一小段失败不该让界面误以为整场投屏都断了。
+                forwardAudioToReceiver = false
+                state = .running
+                log.write(.error, "切换到 iMac 播放失败，已保留在 MacBook 本机播放")
+                return
+            }
+            log.write(.info, "已切换：系统声音改由 iMac 内建扬声器播放")
+        } else {
+            await teardownAudioPipeline()
+            forwardAudioToReceiver = false
+            log.write(.info, "已切换：系统声音改回 MacBook 本机播放")
+        }
     }
 
     /// 停止不仅关闭视频和鼠标通道，还要销毁虚拟显示器。WindowServer 会在显示器
@@ -264,6 +298,7 @@ public final class SenderEngine {
         mediaKeyTap.onCommand = { [weak self] command in
             guard let self else { return }
             self.audioControlSeq &+= 1
+            self.log.write(.info, "音量键：识别到 \(command)，发送序号 \(self.audioControlSeq)")
             self.audioControlSender?.send(AudioControlPacket(sequence: self.audioControlSeq, command: command))
         }
         guard mediaKeyTap.start() else {
@@ -294,6 +329,7 @@ public final class SenderEngine {
     }
 
     private func teardownAudioPipeline() async {
+        guard systemAudioCapture != nil || mediaKeyTap != nil else { return } // 没建过 Tap，没什么可销毁的
         mediaKeyTap?.stop()
         mediaKeyTap = nil
         let capture = systemAudioCapture

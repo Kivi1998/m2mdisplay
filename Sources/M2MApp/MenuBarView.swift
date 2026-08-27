@@ -19,6 +19,23 @@ struct MenuBarView: View {
                         .disabled(appState.isBusy)
                 }
 
+                if role == .sender {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("声音输出").font(.caption).foregroundStyle(.secondary)
+                        Picker("声音输出", selection: Binding(
+                            get: { appState.audioOutputPreference },
+                            set: { appState.setAudioOutputPreference($0) }
+                        )) {
+                            ForEach(AudioOutputPreference.allCases) { preference in
+                                Text(preference.displayName).tag(preference)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .disabled(appState.isBusy)
+                    }
+                }
+
                 if !appState.lastEvents.isEmpty {
                     Divider()
                     Text("最近事件").font(.caption).foregroundStyle(.secondary)

@@ -67,6 +67,8 @@ public final class ReceiverEngine {
     private var displayView: DisplayView!
     private var cursorWindow: NSWindow!
     private var cursorOverlayView: CursorOverlayView!
+    private var volumeHUDWindow: NSWindow!
+    private var volumeHUDView: VolumeHUDView!
     private var nativeCursorController: NativeCursorController!
     private let videoReceiver = VideoReceiver()
     private let cursorReceiver = CursorReceiver()
@@ -161,6 +163,27 @@ public final class ReceiverEngine {
         cursorWindow.level = Self.cursorWindowLevel
         cursorWindow.orderOut(nil)
 
+        // 原生音量 HUD 弹不出来（ControlCenter 会分辨事件是不是真实硬件产生的，
+        // CGEventPost 合成的按键骗不过去），照它的卡片样式自己做一份贴在顶部。
+        let hudSize = CGSize(width: 360, height: 100)
+        let hudFrame = CGRect(
+            x: screenFrame.midX - hudSize.width / 2,
+            y: screenFrame.maxY - hudSize.height - 44,
+            width: hudSize.width,
+            height: hudSize.height
+        )
+        volumeHUDWindow = ReceiverWindow(contentRect: hudFrame, styleMask: [.borderless], backing: .buffered, defer: false)
+        volumeHUDWindow.backgroundColor = .clear
+        volumeHUDWindow.isOpaque = false
+        volumeHUDWindow.hasShadow = true
+        volumeHUDWindow.ignoresMouseEvents = true
+        volumeHUDWindow.collectionBehavior = [.stationary, .ignoresCycle]
+        volumeHUDView = VolumeHUDView(frame: volumeHUDWindow.contentView?.bounds ?? CGRect(origin: .zero, size: hudSize))
+        volumeHUDWindow.contentView = volumeHUDView
+        volumeHUDWindow.setFrame(hudFrame, display: true)
+        volumeHUDWindow.level = Self.cursorWindowLevel
+        volumeHUDWindow.orderOut(nil)
+
         if escapeHatch.start() {
             log.write(.info, "退出开关已就绪——连按三次 Escape 可隐藏投屏")
         } else {
@@ -225,10 +248,18 @@ public final class ReceiverEngine {
         }
         audioControlReceiver.onCommand = { [weak self] command in
             guard let self else { return }
-            do {
-                try self.audioOutputController?.apply(command)
-            } catch {
-                self.log.write(.warning, "控制 iMac 音量失败：\(error)")
+            // 合成一次真正的硬件媒体键事件，交给 macOS 自己的音量键处理逻辑去真的
+            // 改音量——实测过这条能改动真实系统音量，但原生 HUD 不会跟着出现
+            // （ControlCenter 会分辨事件是不是真实硬件产生的），所以还要读回最新
+            // 音量、自己拿 VolumeHUDView 补一份提示。系统处理这次合成事件到属性
+            // 真正更新之间有极短异步延迟，隔一小段再读，避免读到旧值。
+            MediaKeySynthesizer.post(command)
+            self.log.write(.info, "音量键：已收到并合成 \(command)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                guard let self, let controller = self.audioOutputController else { return }
+                let volume = (try? controller.readVolume()) ?? 0
+                let muted = (try? controller.readMuted()) ?? false
+                self.volumeHUDView.show(volume: volume, muted: muted)
             }
         }
         audioControlReceiver.onListenerFailed = { [weak self] error in
@@ -263,12 +294,14 @@ public final class ReceiverEngine {
         // 光标覆盖窗口必须始终盖在主投屏窗口之上，否则锁屏遮罩层级一旦超过
         // 原来写死的 .screenSaver + 1，光标就会被投屏画面挡住变得不可见。
         cursorWindow.level = NSWindow.Level(rawValue: level.rawValue + 1)
+        volumeHUDWindow.level = NSWindow.Level(rawValue: level.rawValue + 1)
         NSApp.setActivationPolicy(.accessory)
         window.makeKeyAndOrderFront(nil)
         NSApp.presentationOptions = [.hideDock, .hideMenuBar, .disableCursorLocationAssistance]
         NSApp.activate(ignoringOtherApps: true)
         window.orderFrontRegardless()
         cursorWindow.orderFrontRegardless()
+        volumeHUDWindow.orderFrontRegardless()
         hideNativeCursorIfNeeded()
         if localInputGuard.start() {
             log.write(.info, "已接管本机鼠标事件，投屏期间 iMac 鼠标不会再穿透到桌面")
@@ -294,6 +327,7 @@ public final class ReceiverEngine {
         }
         displayView.resetVideo()
         cursorOverlayView.hideCursor()
+        volumeHUDView.hideImmediately()
         audioPlayer?.stop()
         formatDescription = nil
         guard isCasting else { return }
@@ -302,6 +336,7 @@ public final class ReceiverEngine {
         NSApp.presentationOptions = []
         window.orderOut(nil)
         cursorWindow.orderOut(nil)
+        volumeHUDWindow.orderOut(nil)
         localInputGuard.stop()
         showNativeCursorIfNeeded()
         powerAssertion.stop()
@@ -314,8 +349,10 @@ public final class ReceiverEngine {
         let level = castingWindowLevel()
         window.level = level
         cursorWindow.level = NSWindow.Level(rawValue: level.rawValue + 1)
+        volumeHUDWindow.level = NSWindow.Level(rawValue: level.rawValue + 1)
         window.orderFrontRegardless()
         cursorWindow.orderFrontRegardless()
+        volumeHUDWindow.orderFrontRegardless()
         hideNativeCursorIfNeeded()
     }
 
@@ -339,6 +376,7 @@ public final class ReceiverEngine {
         NSApp.presentationOptions = []
         powerAssertion.stop()
         cursorWindow?.orderOut(nil)
+        volumeHUDWindow?.orderOut(nil)
         log.write(.info, "正在关闭")
     }
 

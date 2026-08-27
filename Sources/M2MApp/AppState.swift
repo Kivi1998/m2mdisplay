@@ -12,8 +12,10 @@ final class AppState: ObservableObject {
     @Published private(set) var isBusy = false
     @Published private(set) var isRunning = false
     @Published private(set) var isQuitting = false
+    @Published private(set) var audioOutputPreference: AudioOutputPreference
 
     private let roleStore = RoleStore()
+    private let audioOutputPreferenceStore = AudioOutputPreferenceStore()
     private let log = EventLog(role: "app")
     private let lifecycleScripts = PeerLifecycleScripts()
     private let controlServer = PeerControlServer()
@@ -26,6 +28,7 @@ final class AppState: ObservableObject {
     }
 
     init() {
+        audioOutputPreference = audioOutputPreferenceStore.saved
         if let requestedRole = roleStore.roleFromLaunchArguments {
             roleStore.savedRole = requestedRole
             role = requestedRole
@@ -40,6 +43,16 @@ final class AppState: ObservableObject {
         }
 
         if let role { activateEngine(for: role) }
+    }
+
+    /// 投屏进行中也可以切换：SenderEngine.setAudioForwarding 只增减音频 Tap，
+    /// 不用重连视频。还没开始投屏时调用只是记下选择，下次投屏生效。
+    func setAudioOutputPreference(_ preference: AudioOutputPreference) {
+        audioOutputPreference = preference
+        audioOutputPreferenceStore.saved = preference
+        if let senderEngine {
+            Task { await senderEngine.setAudioForwarding(toReceiver: preference == .receiver) }
+        }
     }
 
     func selectRole(_ role: AppRole) {
@@ -140,7 +153,10 @@ final class AppState: ObservableObject {
                 guard let senderEngine else { break }
                 let prepared = await senderEngine.prepareVirtualDisplay(width: 1920, height: 1080, backingScale: 2)
                 if prepared {
-                    await senderEngine.start(receiverHost: Endpoints.receiverHost)
+                    await senderEngine.start(
+                        receiverHost: Endpoints.receiverHost,
+                        forwardAudioToReceiver: audioOutputPreference == .receiver
+                    )
                 }
             case .receiver:
                 pushEvent("接收端将在收到真实首帧后自动显示")
