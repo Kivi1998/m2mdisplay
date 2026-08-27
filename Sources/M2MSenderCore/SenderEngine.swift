@@ -2,6 +2,7 @@
 import CoreGraphics
 import Foundation
 import M2MShared
+import ScreenCaptureKit
 
 public enum SenderState: Equatable {
     case idle
@@ -265,8 +266,25 @@ public final class SenderEngine {
             encoder?.encode(sampleBuffer)
         }
         capturer.onStreamStopped = { [weak self] error in
-            self?.log.write(.warning, "抓屏流意外中断：\(String(describing: error))")
-            self?.recoverFromCaptureStop()
+            guard let self else { return }
+            // 用户在系统"屏幕共享中"提示里点"停止共享"、或系统自己终止录制时，
+            // ScreenCaptureKit 会带上这两个专门的错误码——这种情况必须当成
+            // 主动停止处理，走跟"停止投屏"按钮完全一样的路径；如果仍然按意外
+            // 中断走自动重连，权限本身并没有被撤销，新的抓屏请求会立刻又成功，
+            // 表现为点了系统的停止按钮却完全没有反应。
+            if let scError = error as? SCStreamError {
+                var isIntentionalStop = scError.code == .userStopped
+                if #available(macOS 15.0, *) {
+                    isIntentionalStop = isIntentionalStop || scError.code == .systemStoppedStream
+                }
+                if isIntentionalStop {
+                    self.log.write(.info, "抓屏流被系统\"停止共享\"终止，停止整场投屏")
+                    Task { await self.stop() }
+                    return
+                }
+            }
+            self.log.write(.warning, "抓屏流意外中断：\(String(describing: error))")
+            self.recoverFromCaptureStop()
         }
 
         do {
