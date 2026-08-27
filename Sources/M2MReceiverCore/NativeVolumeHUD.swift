@@ -36,8 +36,6 @@ final class NativeVolumeHUD {
     private let frameworkHandle: UnsafeMutableRawPointer?
     private let manager: AnyObject?
     private let showImageFunction: ShowImageFunction?
-    private let positioner = ControlCenterHUDPositioner()
-    var onPositioningDiagnostic: ((String) -> Void)?
 
     init() {
         frameworkHandle = dlopen(Self.frameworkPath, RTLD_LAZY | RTLD_LOCAL)
@@ -97,9 +95,6 @@ final class NativeVolumeHUD {
             100,
             false
         )
-        positioner.centerNextHUD { [weak self] message in
-            self?.onPositioningDiagnostic?(message)
-        }
         return true
     }
 

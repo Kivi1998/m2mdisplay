@@ -2,19 +2,6 @@ import XCTest
 @testable import M2MReceiverCore
 
 final class NativeVolumeHUDTests: XCTestCase {
-    func test原生HUD窗口中心会对准声音图标中心() {
-        let anchorRect = CGRect(x: 1_613, y: 0, width: 44, height: 30)
-        let hudBounds = CGRect(x: 1_572, y: 0, width: 352, height: 149)
-
-        XCTAssertEqual(
-            ControlCenterHUDPositioner.centeredOriginX(
-                anchorRect: anchorRect,
-                hudBounds: hudBounds
-            ),
-            1_459
-        )
-    }
-
     func test音量值会限制在原生HUD范围内() {
         XCTAssertEqual(
             NativeVolumeHUD.presentation(volume: -1, muted: false),

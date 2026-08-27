@@ -126,9 +126,6 @@ public final class ReceiverEngine {
         }
         receiverDisplayID = displayID(for: screen)
         nativeCursorController = NativeCursorController(displayID: receiverDisplayID)
-        nativeVolumeHUD.onPositioningDiagnostic = { [weak self] message in
-            self?.log.write(.info, message)
-        }
         window = ReceiverWindow(contentRect: screenFrame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.backgroundColor = .black
         window.isOpaque = true
