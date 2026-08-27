@@ -23,10 +23,14 @@ Dock、菜单栏都隐藏掉。这个规则不是随便定的——已经因为�
   （`CGVirtualDisplay` 私有 API）、用 ScreenCaptureKit 抓屏、VideoToolbox
   硬件编码、通过 Network.framework 把视频发给接收端；同时用 CGEventTap
   监听全局鼠标位置，走一条独立的、不经编解码的 UDP 通道把光标坐标实时发
-  过去——这条独立通道是延迟远低于 AirPlay 的核心原因。
+  过去——这条独立通道是延迟远低于 AirPlay 的核心原因。系统声音通过 Core
+  Audio Process Tap 以“抓取时静音”方式读取，使用独立 UDP PCM 通道发送；
+  投屏期间还会接管 F10/F11/F12，通过可靠 TCP 控制通道修改 iMac 音量。
 - `M2MReceiverCore` / `M2MReceiverCLI`：接收端。监听视频/光标端口，
   VideoToolbox 硬解码后铺满整个物理屏幕显示，收到光标坐标和类型后在独立
   悬浮窗口（`CursorOverlayView`）里叠加渲染对应形状（箭头/手形/工字）。
+  音频固定输出到 iMac 内建扬声器，使用 20 毫秒起播、80 毫秒上限的环形缓冲；
+  积压时丢最旧数据，不允许延迟无限增长。
 - `M2MApp`：SwiftUI 菜单栏图形界面，两台机器装同一个 App，启动时选角色，
   可以随时开始/停止投屏。用 `scripts/package-m2mapp.sh` 打包成真正的
   `.app`（SPM 不会自动做这件事），图标源文件在 `Resources/M2MApp.icns`。
@@ -41,7 +45,7 @@ Dock、菜单栏都隐藏掉。这个规则不是随便定的——已经因为�
   断言挡住 iMac 休眠（`PowerAssertion.swift`），用户忘记手动停止投屏就睡
   觉了，两台 Mac 的屏幕会一直亮一整晚。
 - `M2MShared`：两端共用的协议定义（`CursorPacket`/`FrameHeader`/
-  `AckPacket`）和持久化事件日志 `EventLog`（写到
+  `AckPacket`/`AudioPacket`/`AudioControlPacket`）和持久化事件日志 `EventLog`（写到
   `~/Library/Logs/M2MDisplay/`）。
 
 ## Git 提交规范

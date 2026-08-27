@@ -130,6 +130,172 @@ final class VideoReceiver {
     }
 }
 
+/// 实时 PCM 音频接收器。只在视频会话已建立时接受 UDP 对端，避免停止投屏后的
+/// 迟到包重新启动声音；序列号用于丢弃重复或乱序的旧数据。
+final class AudioReceiver {
+    private var listener: NWListener?
+    private var connection: NWConnection?
+    private var lastSequence: UInt32?
+    private var acceptingSession = false
+    var onPacket: ((AudioPacket) -> Void)?
+    var onListenerFailed: ((Error) -> Void)?
+
+    func start(port: UInt16) throws {
+        let params = NWParameters.udp
+        params.allowLocalEndpointReuse = true
+        if let ipOptions = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ipOptions.version = .v4
+        }
+        let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
+        listener.stateUpdateHandler = { [weak self] state in
+            if case .failed(let error) = state { self?.onListenerFailed?(error) }
+        }
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { return }
+            guard self.acceptingSession else {
+                connection.cancel()
+                return
+            }
+            self.endConnection()
+            self.connection = connection
+            self.lastSequence = nil
+            connection.start(queue: .main)
+            self.receiveDatagram(on: connection)
+        }
+        listener.start(queue: .main)
+        self.listener = listener
+    }
+
+    func beginSession() {
+        endConnection()
+        acceptingSession = true
+    }
+
+    func endSession() {
+        acceptingSession = false
+        endConnection()
+    }
+
+    private func receiveDatagram(on connection: NWConnection) {
+        connection.receiveMessage { [weak self, weak connection] data, _, _, error in
+            guard let self, let connection, self.connection === connection else { return }
+            if let data, let packet = AudioPacket.decode(data) {
+                let isNewer = self.lastSequence.map { Int32(bitPattern: packet.sequence &- $0) > 0 } ?? true
+                if isNewer {
+                    self.lastSequence = packet.sequence
+                    self.onPacket?(packet)
+                }
+            }
+            if error == nil { self.receiveDatagram(on: connection) }
+        }
+    }
+
+    private func endConnection() {
+        let active = connection
+        connection = nil
+        active?.stateUpdateHandler = nil
+        active?.cancel()
+        lastSequence = nil
+    }
+
+    func stop() {
+        endSession()
+        listener?.cancel()
+        listener = nil
+    }
+}
+
+/// 音量控制命令接收器使用 TCP 固定长度分帧。重复序列号不会执行第二次，避免
+/// 连接层重试或未来恢复逻辑让一次按键变成两次音量变化。
+final class AudioControlReceiver {
+    private var listener: NWListener?
+    private var connection: NWConnection?
+    private var buffer = Data()
+    private var lastSequence: UInt32?
+    private var acceptingSession = false
+    var onCommand: ((AudioControlCommand) -> Void)?
+    var onListenerFailed: ((Error) -> Void)?
+
+    func start(port: UInt16) throws {
+        let params = NWParameters.tcp
+        params.allowLocalEndpointReuse = true
+        if let ipOptions = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ipOptions.version = .v4
+        }
+        let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
+        listener.stateUpdateHandler = { [weak self] state in
+            if case .failed(let error) = state { self?.onListenerFailed?(error) }
+        }
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { return }
+            guard self.acceptingSession else {
+                connection.cancel()
+                return
+            }
+            self.endConnection()
+            self.connection = connection
+            self.buffer.removeAll(keepingCapacity: true)
+            self.lastSequence = nil
+            connection.start(queue: .main)
+            self.receiveMore(on: connection)
+        }
+        listener.start(queue: .main)
+        self.listener = listener
+    }
+
+    func beginSession() {
+        endConnection()
+        acceptingSession = true
+    }
+
+    func endSession() {
+        acceptingSession = false
+        endConnection()
+    }
+
+    private func receiveMore(on connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1_024) { [weak self, weak connection] data, _, complete, error in
+            guard let self, let connection, self.connection === connection else { return }
+            if let data, !data.isEmpty {
+                self.buffer.append(data)
+                self.drainBuffer()
+            }
+            if error != nil || complete {
+                self.endConnection()
+            } else {
+                self.receiveMore(on: connection)
+            }
+        }
+    }
+
+    private func drainBuffer() {
+        while buffer.count >= AudioControlPacket.byteSize {
+            let data = buffer.prefix(AudioControlPacket.byteSize)
+            buffer.removeFirst(AudioControlPacket.byteSize)
+            guard let packet = AudioControlPacket.decode(Data(data)) else { continue }
+            let isNewer = lastSequence.map { Int32(bitPattern: packet.sequence &- $0) > 0 } ?? true
+            guard isNewer else { continue }
+            lastSequence = packet.sequence
+            onCommand?(packet.command)
+        }
+    }
+
+    private func endConnection() {
+        let active = connection
+        connection = nil
+        active?.stateUpdateHandler = nil
+        active?.cancel()
+        buffer.removeAll(keepingCapacity: true)
+        lastSequence = nil
+    }
+
+    func stop() {
+        endSession()
+        listener?.cancel()
+        listener = nil
+    }
+}
+
 final class CursorReceiver {
     private var listener: NWListener?
     private var connection: NWConnection?

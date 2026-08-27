@@ -84,6 +84,119 @@ final class VideoSender {
     }
 }
 
+/// 音频实时数据使用 UDP：一个数据包只承载 2.5 ms，出现极端丢包时宁可丢掉
+/// 旧声音，也不能像 TCP 那样让后续声音排队等待重传而不断累积延迟。
+final class AudioSender {
+    private let connection: NWConnection
+    private let stateLock = NSLock()
+    private var ready = false
+    private var pendingReadyContinuations: [CheckedContinuation<Void, Error>] = []
+
+    init(host: String, port: UInt16) {
+        let endpoint = NWEndpoint.Host(host)
+        let nwPort = NWEndpoint.Port(rawValue: port)!
+        let params = NWParameters.udp
+        if let ipOptions = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ipOptions.version = .v4
+        }
+        connection = NWConnection(host: endpoint, port: nwPort, using: params)
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.stateLock.lock()
+                self.ready = true
+                self.stateLock.unlock()
+                self.pendingReadyContinuations.forEach { $0.resume() }
+                self.pendingReadyContinuations.removeAll()
+            case .failed(let error):
+                self.pendingReadyContinuations.forEach { $0.resume(throwing: error) }
+                self.pendingReadyContinuations.removeAll()
+            case .waiting:
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                    self?.connection.restart()
+                }
+            default:
+                break
+            }
+        }
+        connection.start(queue: .main)
+    }
+
+    func waitUntilReady() async throws {
+        let isReady = stateLock.withLock { ready }
+        if isReady { return }
+        try await withCheckedThrowingContinuation { continuation in
+            pendingReadyContinuations.append(continuation)
+        }
+    }
+
+    func send(_ packet: AudioPacket) {
+        let canSend = stateLock.withLock { ready }
+        guard canSend, let data = packet.encoded() else { return }
+        // 实时音频不重试：重传到达时已经比新声音更旧，只会扩大延迟。
+        connection.send(content: data, completion: .contentProcessed { _ in })
+    }
+
+    func stop() {
+        stateLock.withLock { ready = false }
+        connection.cancel()
+    }
+}
+
+/// 音量键命令使用 TCP，确保每次加音量、减音量和静音操作都可靠、有序地到达 iMac。
+final class AudioControlSender {
+    private let connection: NWConnection
+    private var ready = false
+    private var pendingReadyContinuations: [CheckedContinuation<Void, Error>] = []
+
+    init(host: String, port: UInt16) {
+        let endpoint = NWEndpoint.Host(host)
+        let nwPort = NWEndpoint.Port(rawValue: port)!
+        let params = NWParameters.tcp
+        if let ipOptions = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ipOptions.version = .v4
+        }
+        connection = NWConnection(host: endpoint, port: nwPort, using: params)
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.ready = true
+                self.pendingReadyContinuations.forEach { $0.resume() }
+                self.pendingReadyContinuations.removeAll()
+            case .failed(let error):
+                self.pendingReadyContinuations.forEach { $0.resume(throwing: error) }
+                self.pendingReadyContinuations.removeAll()
+            case .waiting:
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.connection.restart()
+                }
+            default:
+                break
+            }
+        }
+        connection.start(queue: .main)
+    }
+
+    func waitUntilReady() async throws {
+        if ready { return }
+        try await withCheckedThrowingContinuation { continuation in
+            pendingReadyContinuations.append(continuation)
+        }
+    }
+
+    func send(_ packet: AudioControlPacket) {
+        guard ready else { return }
+        connection.send(content: packet.encoded(), completion: .contentProcessed { _ in })
+    }
+
+    func stop() {
+        ready = false
+        connection.cancel()
+    }
+}
+
 final class CursorSender {
     private let connection: NWConnection
 

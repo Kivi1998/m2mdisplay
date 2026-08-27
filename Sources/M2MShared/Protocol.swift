@@ -129,3 +129,117 @@ public struct AckPacket {
         }
     }
 }
+
+/// 双机之间固定使用的音频格式。两台目标机器的 Core Audio Tap 真机输出均为
+/// 48 kHz 双声道 Float32；不做有损压缩，避免编码器额外增加延迟。
+public enum AudioWireFormat {
+    public static let sampleRate: Double = 48_000
+    public static let channelCount = 2
+    public static let bytesPerSample = MemoryLayout<Float32>.size
+    public static let bytesPerFrame = channelCount * bytesPerSample
+
+    /// 120 帧等于 2.5 ms，连同 12 字节包头仍小于雷雳桥 IPv4 的常规 MTU，
+    /// 不会因为一个音频包被拆成多个 IP 分片而平白增加抖动和丢包风险。
+    public static let framesPerPacket = 120
+    public static let payloadBytesPerPacket = framesPerPacket * bytesPerFrame
+}
+
+/// 音频实时数据走 UDP。旧音频即使重传也已经失去意义，所以每个包带序列号，
+/// 接收端只接受更新的数据并使用有界缓冲吸收极小的调度抖动。
+public struct AudioPacket {
+    private static let magic: UInt32 = 0x3141_324D // 内存中的 ASCII：M2A1
+
+    public let sequence: UInt32
+    public let frameCount: UInt16
+    public let payload: Data
+
+    public init(sequence: UInt32, frameCount: UInt16, payload: Data) {
+        self.sequence = sequence
+        self.frameCount = frameCount
+        self.payload = payload
+    }
+
+    public static let headerByteSize = MemoryLayout<UInt32>.size * 2 + MemoryLayout<UInt16>.size * 2
+
+    public func encoded() -> Data? {
+        guard frameCount > 0,
+              Int(frameCount) <= AudioWireFormat.framesPerPacket,
+              payload.count == Int(frameCount) * AudioWireFormat.bytesPerFrame
+        else { return nil }
+
+        var magic = Self.magic
+        var sequence = sequence
+        var frameCount = frameCount
+        var reserved: UInt16 = 0
+        var data = Data(capacity: Self.headerByteSize + payload.count)
+        data.append(Data(bytes: &magic, count: MemoryLayout<UInt32>.size))
+        data.append(Data(bytes: &sequence, count: MemoryLayout<UInt32>.size))
+        data.append(Data(bytes: &frameCount, count: MemoryLayout<UInt16>.size))
+        data.append(Data(bytes: &reserved, count: MemoryLayout<UInt16>.size))
+        data.append(payload)
+        return data
+    }
+
+    public static func decode(_ data: Data) -> AudioPacket? {
+        guard data.count >= headerByteSize else { return nil }
+        return data.withUnsafeBytes { raw -> AudioPacket? in
+            guard raw.loadUnaligned(fromByteOffset: 0, as: UInt32.self) == magic else { return nil }
+            let sequence = raw.loadUnaligned(fromByteOffset: 4, as: UInt32.self)
+            let frameCount = raw.loadUnaligned(fromByteOffset: 8, as: UInt16.self)
+            guard frameCount > 0, Int(frameCount) <= AudioWireFormat.framesPerPacket else { return nil }
+            let payloadLength = Int(frameCount) * AudioWireFormat.bytesPerFrame
+            guard data.count == headerByteSize + payloadLength else { return nil }
+            return AudioPacket(
+                sequence: sequence,
+                frameCount: frameCount,
+                payload: data.subdata(in: headerByteSize..<data.count)
+            )
+        }
+    }
+}
+
+public enum AudioControlCommand: UInt8 {
+    case volumeUp = 1
+    case volumeDown = 2
+    case toggleMute = 3
+}
+
+/// 音量键是离散操作，不能像实时音频一样容忍丢包，因此使用独立 TCP 通道。
+/// 固定长度包同时带序列号，接收端可安全忽略重复命令。
+public struct AudioControlPacket {
+    private static let magic: UInt32 = 0x3143_324D // 内存中的 ASCII：M2C1
+
+    public let sequence: UInt32
+    public let command: AudioControlCommand
+
+    public init(sequence: UInt32, command: AudioControlCommand) {
+        self.sequence = sequence
+        self.command = command
+    }
+
+    public static let byteSize = MemoryLayout<UInt32>.size * 2 + MemoryLayout<UInt8>.size
+
+    public func encoded() -> Data {
+        var magic = Self.magic
+        var sequence = sequence
+        var command = command.rawValue
+        var data = Data(capacity: Self.byteSize)
+        data.append(Data(bytes: &magic, count: MemoryLayout<UInt32>.size))
+        data.append(Data(bytes: &sequence, count: MemoryLayout<UInt32>.size))
+        data.append(Data(bytes: &command, count: MemoryLayout<UInt8>.size))
+        return data
+    }
+
+    public static func decode(_ data: Data) -> AudioControlPacket? {
+        guard data.count >= byteSize else { return nil }
+        return data.withUnsafeBytes { raw -> AudioControlPacket? in
+            guard raw.loadUnaligned(fromByteOffset: 0, as: UInt32.self) == magic,
+                  let command = AudioControlCommand(rawValue: raw.loadUnaligned(fromByteOffset: 8, as: UInt8.self))
+            else { return nil }
+            return AudioControlPacket(
+                sequence: raw.loadUnaligned(fromByteOffset: 4, as: UInt32.self),
+                command: command
+            )
+        }
+    }
+}

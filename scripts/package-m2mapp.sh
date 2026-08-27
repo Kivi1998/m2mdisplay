@@ -67,7 +67,9 @@ cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
+    <string>14.2</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>投屏期间将 MacBook 的系统声音低延迟传送到 iMac 内建扬声器播放。</string>
     <key>LSUIElement</key>
     <true/>
 </dict>

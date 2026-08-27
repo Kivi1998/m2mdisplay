@@ -16,8 +16,8 @@ private final class ReceiverWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
-/// 只管理 iMac 本机光标的隐藏计数。实际光标由发送端 ScreenCaptureKit 合成到
-/// 视频帧中；这里必须避免 iMac 自己的箭头叠在远端光标上形成“双光标”。
+/// 只管理 iMac 本机光标的隐藏计数。MacBook 光标由接收端独立图层绘制；这里
+/// 必须避免 iMac 自己的箭头叠在远端光标上形成“双光标”。
 final class NativeCursorController {
     private let displayID: CGDirectDisplayID
     private let hideCursor: (CGDirectDisplayID) -> CGError
@@ -70,6 +70,10 @@ public final class ReceiverEngine {
     private var nativeCursorController: NativeCursorController!
     private let videoReceiver = VideoReceiver()
     private let cursorReceiver = CursorReceiver()
+    private let audioReceiver = AudioReceiver()
+    private let audioControlReceiver = AudioControlReceiver()
+    private var audioOutputController: AudioOutputController?
+    private var audioPlayer: LowLatencyAudioPlayer?
     private var formatDescription: CMFormatDescription?
     private let cursorSpaceWidth = 1920
     private let cursorSpaceHeight = 1080
@@ -81,6 +85,7 @@ public final class ReceiverEngine {
     private var immersiveModeEnabled = false
     private var isCasting = false
     private var waitingForFirstFrame = false
+    private var receivedFirstAudioPacket = false
     private var ackSender: AckSender?
 
     public init() {}
@@ -120,6 +125,16 @@ public final class ReceiverEngine {
     public func prepareWindow() {
         let screen = physicalScreen()
         let screenFrame = screen.frame
+        do {
+            let outputController = try AudioOutputController()
+            audioOutputController = outputController
+            audioPlayer = LowLatencyAudioPlayer(outputDeviceID: outputController.deviceID)
+            log.write(.info, "iMac 内建扬声器已就绪")
+        } catch {
+            state = .error("初始化 iMac 音频输出失败：\(error.localizedDescription)")
+            log.write(.error, "初始化 iMac 音频输出失败：\(error)")
+            return
+        }
         nativeCursorController = NativeCursorController(displayID: displayID(for: screen))
         window = ReceiverWindow(contentRect: screenFrame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.backgroundColor = .black
@@ -162,9 +177,19 @@ public final class ReceiverEngine {
                 self.displayView.resetVideo()
                 self.cursorOverlayView.hideCursor()
                 self.waitingForFirstFrame = true
+                self.receivedFirstAudioPacket = false
                 self.cursorReceiver.beginSession()
+                self.audioReceiver.beginSession()
+                self.audioControlReceiver.beginSession()
                 self.ackSender?.stop()
                 self.ackSender = AckSender(host: Endpoints.senderHost, port: NetworkConfig.ackPort)
+                do {
+                    try self.audioPlayer?.start()
+                    self.log.write(.info, "iMac 低延迟音频播放已启动")
+                } catch {
+                    self.state = .error("启动 iMac 音频播放失败：\(error.localizedDescription)")
+                    self.log.write(.error, "启动 iMac 音频播放失败：\(error)")
+                }
                 self.log.write(.info, "发送端已连接，正在等待真实首帧")
             }
         }
@@ -173,6 +198,9 @@ public final class ReceiverEngine {
                 guard let self else { return }
                 self.waitingForFirstFrame = false
                 self.cursorReceiver.endSession()
+                self.audioReceiver.endSession()
+                self.audioControlReceiver.endSession()
+                self.audioPlayer?.stop()
                 self.ackSender?.stop()
                 self.ackSender = nil
                 self.log.write(.info, "发送端已断开，自动恢复 iMac 原生桌面")
@@ -184,12 +212,36 @@ public final class ReceiverEngine {
             self?.log.write(.error, "视频监听器异步绑定失败（端口可能被占用/处于 TIME_WAIT）：\(error)")
         }
         cursorReceiver.onCursor = { [weak self] packet in self?.handleCursor(packet) }
+        audioReceiver.onPacket = { [weak self] packet in
+            guard let self else { return }
+            if !self.receivedFirstAudioPacket {
+                self.receivedFirstAudioPacket = true
+                self.log.write(.info, "已收到首个系统音频包：\(packet.frameCount) 帧")
+            }
+            self.audioPlayer?.enqueue(packet)
+        }
+        audioReceiver.onListenerFailed = { [weak self] error in
+            self?.log.write(.error, "音频监听器异步绑定失败：\(error)")
+        }
+        audioControlReceiver.onCommand = { [weak self] command in
+            guard let self else { return }
+            do {
+                try self.audioOutputController?.apply(command)
+            } catch {
+                self.log.write(.warning, "控制 iMac 音量失败：\(error)")
+            }
+        }
+        audioControlReceiver.onListenerFailed = { [weak self] error in
+            self?.log.write(.error, "音量控制监听器异步绑定失败：\(error)")
+        }
 
         do {
             try videoReceiver.start(port: NetworkConfig.videoPort)
             try cursorReceiver.start(port: NetworkConfig.cursorPort)
+            try audioReceiver.start(port: NetworkConfig.audioPort)
+            try audioControlReceiver.start(port: NetworkConfig.audioControlPort)
             state = .listening
-            log.write(.info, "监听中 — 视频端口:\(NetworkConfig.videoPort) 光标端口:\(NetworkConfig.cursorPort)")
+            log.write(.info, "监听中 — 视频:\(NetworkConfig.videoPort) 光标:\(NetworkConfig.cursorPort) 音频:\(NetworkConfig.audioPort) 音量控制:\(NetworkConfig.audioControlPort)")
         } catch {
             state = .error("监听器启动失败：\(error)")
             log.write(.error, "监听器启动失败：\(error)")
@@ -242,6 +294,7 @@ public final class ReceiverEngine {
         }
         displayView.resetVideo()
         cursorOverlayView.hideCursor()
+        audioPlayer?.stop()
         formatDescription = nil
         guard isCasting else { return }
         isCasting = false
@@ -276,6 +329,9 @@ public final class ReceiverEngine {
     public func shutdown() {
         videoReceiver.stop()
         cursorReceiver.stop()
+        audioReceiver.stop()
+        audioControlReceiver.stop()
+        audioPlayer?.stop()
         ackSender?.stop()
         ackSender = nil
         localInputGuard.stop()

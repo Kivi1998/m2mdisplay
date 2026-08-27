@@ -27,9 +27,15 @@ public final class SenderEngine {
     private var encoder: VideoEncoder?
     private var videoSender: VideoSender?
     private var cursorSender: CursorSender?
+    private var audioSender: AudioSender?
+    private var audioControlSender: AudioControlSender?
     private var mouseTap: MouseTap?
+    private var mediaKeyTap: MediaKeyTap?
+    private var systemAudioCapture: SystemAudioCapture?
     private var ackReceiver: AckReceiver?
     private var cursorSeq: UInt32 = 0
+    private var audioSeq: UInt32 = 0
+    private var audioControlSeq: UInt32 = 0
 
     public init() {}
 
@@ -107,14 +113,39 @@ public final class SenderEngine {
             return
         }
 
+        // 视频握手成功后，接收端已经打开本次音频会话；这时再建立音频和音量
+        // 控制连接，可避免它们抢在视频连接之前到达而被接收端当作迟到包拒绝。
+        let audioSender = AudioSender(host: receiverHost, port: NetworkConfig.audioPort)
+        self.audioSender = audioSender
+        let audioControlSender = AudioControlSender(host: receiverHost, port: NetworkConfig.audioControlPort)
+        self.audioControlSender = audioControlSender
+        do {
+            try await audioSender.waitUntilReady()
+            try await audioControlSender.waitUntilReady()
+        } catch {
+            state = .error("音频连接失败：\(error)")
+            log.write(.error, "音频连接失败：\(error)")
+            teardownTransport()
+            await releaseVirtualDisplay()
+            return
+        }
+
         guard await startCapturePipeline(retryCount: 0) else {
             await teardownCapturePipeline()
             teardownTransport()
             await releaseVirtualDisplay()
             return
         }
+
+        guard await startAudioPipeline() else {
+            await teardownCapturePipeline()
+            await teardownAudioPipeline()
+            teardownTransport()
+            await releaseVirtualDisplay()
+            return
+        }
         state = .running
-        log.write(.info, "运行中")
+        log.write(.info, "运行中——系统声音由 iMac 内建扬声器播放")
     }
 
     /// 停止不仅关闭视频和鼠标通道，还要销毁虚拟显示器。WindowServer 会在显示器
@@ -123,6 +154,7 @@ public final class SenderEngine {
         guard virtualDisplay != nil || state == .running || state == .reconnecting || state == .starting || isErrorState else { return }
         state = .stopping
         log.write(.info, "正在停止（用户操作）")
+        await teardownAudioPipeline()
         await teardownCapturePipeline()
         teardownTransport()
         await releaseVirtualDisplay()
@@ -134,12 +166,18 @@ public final class SenderEngine {
     /// 最后的隐藏包来不及发出，接收端只能保留断联前的箭头。
     private func teardownTransport() {
         mouseTap?.stop()
+        mediaKeyTap?.stop()
         videoSender?.stop()
         cursorSender?.stop()
+        audioSender?.stop()
+        audioControlSender?.stop()
         ackReceiver?.stop()
         videoSender = nil
         cursorSender = nil
+        audioSender = nil
+        audioControlSender = nil
         mouseTap = nil
+        mediaKeyTap = nil
         ackReceiver = nil
     }
 
@@ -219,6 +257,53 @@ public final class SenderEngine {
         encoder = nil
     }
 
+    /// 先启动音量键转发，再启动带静音策略的系统音频 Tap。Tap 的创建与首次权限
+    /// 检查可能阻塞，放到后台任务中，不能冻住菜单栏界面。
+    private func startAudioPipeline() async -> Bool {
+        let mediaKeyTap = MediaKeyTap()
+        mediaKeyTap.onCommand = { [weak self] command in
+            guard let self else { return }
+            self.audioControlSeq &+= 1
+            self.audioControlSender?.send(AudioControlPacket(sequence: self.audioControlSeq, command: command))
+        }
+        guard mediaKeyTap.start() else {
+            state = .error("接管音量键失败——请在系统设置的辅助功能中允许 M2M Display")
+            log.write(.error, "接管音量键失败，缺少辅助功能权限")
+            return false
+        }
+        self.mediaKeyTap = mediaKeyTap
+
+        let capture = SystemAudioCapture()
+        capture.onFrames = { [weak self] payload, frameCount in
+            guard let self else { return }
+            self.audioSeq &+= 1
+            self.audioSender?.send(AudioPacket(sequence: self.audioSeq, frameCount: frameCount, payload: payload))
+        }
+        systemAudioCapture = capture
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try capture.start()
+            }.value
+            log.write(.info, "系统音频 Tap 已启动，MacBook 本机输出已静音")
+            return true
+        } catch {
+            state = .error("系统音频捕获启动失败：\(error.localizedDescription)")
+            log.write(.error, "系统音频捕获启动失败：\(error)")
+            return false
+        }
+    }
+
+    private func teardownAudioPipeline() async {
+        mediaKeyTap?.stop()
+        mediaKeyTap = nil
+        let capture = systemAudioCapture
+        systemAudioCapture = nil
+        await Task.detached(priority: .userInitiated) {
+            capture?.stop()
+        }.value
+        log.write(.info, "系统音频 Tap 已销毁，MacBook 本机声音已恢复")
+    }
+
     private func recoverFromCaptureStop() {
         guard state == .running else { return } // 如果是用户主动停止的，这时已经收拾过了
         Task {
@@ -229,6 +314,7 @@ public final class SenderEngine {
                 state = .running
                 log.write(.info, "已恢复")
             } else {
+                await teardownAudioPipeline()
                 await teardownCapturePipeline()
                 teardownTransport()
                 await releaseVirtualDisplay()

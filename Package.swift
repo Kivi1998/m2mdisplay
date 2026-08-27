@@ -3,7 +3,8 @@ import PackageDescription
 
 let package = Package(
     name: "m2mdisplay",
-    platforms: [.macOS(.v14)],
+    // Core Audio Process Tap 的公开读取接口从 macOS 14.2 开始可用。
+    platforms: [.macOS("14.2")],
     targets: [
         .target(
             name: "M2MShared",
