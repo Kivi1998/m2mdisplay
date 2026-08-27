@@ -55,6 +55,7 @@ final class NativeCursorController {
 /// 跟窗口/监听器本身（prepareWindow()）分开——窗口只创建一次，默认隐藏，网络监听器
 /// 在隐藏/显示之间切换时始终保持存活，这样重新打开投屏不需要发送端重新连接。
 public final class ReceiverEngine {
+    static let castingWindowLevel = NSWindow.Level.screenSaver
     static let cursorWindowLevel = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
 
     public private(set) var state: ReceiverState = .idle {
@@ -69,6 +70,7 @@ public final class ReceiverEngine {
     private var cursorOverlayView: CursorOverlayView!
     private var volumeHUDWindow: NSWindow!
     private var volumeHUDView: VolumeHUDView!
+    private let nativeVolumeHUD = NativeVolumeHUD()
     private var nativeCursorController: NativeCursorController!
     private let videoReceiver = VideoReceiver()
     private let cursorReceiver = CursorReceiver()
@@ -89,6 +91,7 @@ public final class ReceiverEngine {
     private var waitingForFirstFrame = false
     private var receivedFirstAudioPacket = false
     private var ackSender: AckSender?
+    private var receiverDisplayID = CGMainDisplayID()
 
     public init() {}
 
@@ -107,22 +110,6 @@ public final class ReceiverEngine {
         return CGDirectDisplayID(number.uint32Value)
     }
 
-    /// 锁屏时 `CGShieldingWindowLevel()` 会返回锁屏遮罩窗口的层级（一个很高的
-    /// 数值），没锁屏时返回值很低（不能直接拿来用）；每次显示投屏前都重新查
-    /// 一次，跟原来的 .screenSaver 取较大值，这样锁屏状态下窗口能盖在锁屏遮罩
-    /// 之上，没锁屏时行为跟之前完全一样。这是苹果公开文档记录的 API，不是私有
-    /// 调用。真机验证过一半：一旦触发了真正的登录窗口认证界面（比如用户
-    /// 手动执行"锁定屏幕"，或者"锁定屏幕"设置里密码延时不是"永不"），那是
-    /// 完全独立的高权限子系统，任何第三方窗口层级都盖不过去，这是苹果刻意
-    /// 做的安全边界（防止第三方 App 伪造假密码框钓鱼），不是这里能绕开的。
-    /// 这个技巧对"自动空闲触发、且系统设置里密码延时已经改成永不"的场景是否
-    /// 真能生效，还没有真机验证过，等测试结果确认。
-    private func castingWindowLevel() -> NSWindow.Level {
-        let shieldLevel = Int(CGShieldingWindowLevel())
-        let baseLevel = NSWindow.Level.screenSaver.rawValue
-        return NSWindow.Level(rawValue: max(baseLevel, shieldLevel + 1))
-    }
-
     /// 创建（初始隐藏的）覆盖窗口，并开始监听发送端的连接。App 启动时调用一次即可。
     public func prepareWindow() {
         let screen = physicalScreen()
@@ -137,7 +124,11 @@ public final class ReceiverEngine {
             log.write(.error, "初始化 iMac 音频输出失败：\(error)")
             return
         }
-        nativeCursorController = NativeCursorController(displayID: displayID(for: screen))
+        receiverDisplayID = displayID(for: screen)
+        nativeCursorController = NativeCursorController(displayID: receiverDisplayID)
+        nativeVolumeHUD.onPositioningDiagnostic = { [weak self] message in
+            self?.log.write(.info, message)
+        }
         window = ReceiverWindow(contentRect: screenFrame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.backgroundColor = .black
         window.isOpaque = true
@@ -163,12 +154,11 @@ public final class ReceiverEngine {
         cursorWindow.level = Self.cursorWindowLevel
         cursorWindow.orderOut(nil)
 
-        // 原生音量 HUD 弹不出来（ControlCenter 会分辨事件是不是真实硬件产生的，
-        // CGEventPost 合成的按键骗不过去），照它的卡片样式自己做一份贴在顶部。
-        let hudSize = CGSize(width: 360, height: 100)
+        // OSD 私有入口在系统升级后不可用时，使用这一份缩小后的玻璃提示条兜底。
+        let hudSize = CGSize(width: 292, height: 64)
         let hudFrame = CGRect(
             x: screenFrame.midX - hudSize.width / 2,
-            y: screenFrame.maxY - hudSize.height - 44,
+            y: screenFrame.maxY - hudSize.height - 10,
             width: hudSize.width,
             height: hudSize.height
         )
@@ -249,17 +239,23 @@ public final class ReceiverEngine {
         audioControlReceiver.onCommand = { [weak self] command in
             guard let self else { return }
             // 合成一次真正的硬件媒体键事件，交给 macOS 自己的音量键处理逻辑去真的
-            // 改音量——实测过这条能改动真实系统音量，但原生 HUD 不会跟着出现
-            // （ControlCenter 会分辨事件是不是真实硬件产生的），所以还要读回最新
-            // 音量、自己拿 VolumeHUDView 补一份提示。系统处理这次合成事件到属性
-            // 真正更新之间有极短异步延迟，隔一小段再读，避免读到旧值。
+            // 改音量。ControlCenter 不会因合成按键主动弹 HUD，所以读回最新音量后
+            // 直接调用它自己的 OSD 入口；入口不存在时才显示自绘兜底提示条。
+            // 系统处理合成事件到属性更新之间有极短异步延迟，隔一小段再读取。
             MediaKeySynthesizer.post(command)
             self.log.write(.info, "音量键：已收到并合成 \(command)")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                 guard let self, let controller = self.audioOutputController else { return }
                 let volume = (try? controller.readVolume()) ?? 0
                 let muted = (try? controller.readMuted()) ?? false
-                self.volumeHUDView.show(volume: volume, muted: muted)
+                if !self.nativeVolumeHUD.show(
+                    volume: volume,
+                    muted: muted,
+                    displayID: self.receiverDisplayID
+                ) {
+                    self.log.write(.warning, "原生音量 HUD 不可用，已回退到自绘提示条")
+                    self.volumeHUDView.show(volume: volume, muted: muted)
+                }
             }
         }
         audioControlReceiver.onListenerFailed = { [weak self] error in
@@ -289,7 +285,7 @@ public final class ReceiverEngine {
         guard !isCasting else { return }
         isCasting = true
         immersiveModeEnabled = true
-        let level = castingWindowLevel()
+        let level = Self.castingWindowLevel
         window.level = level
         // 光标覆盖窗口必须始终盖在主投屏窗口之上，否则锁屏遮罩层级一旦超过
         // 原来写死的 .screenSaver + 1，光标就会被投屏画面挡住变得不可见。
@@ -346,7 +342,7 @@ public final class ReceiverEngine {
 
     public func handleDidBecomeActive() {
         guard window != nil, immersiveModeEnabled else { return }
-        let level = castingWindowLevel()
+        let level = Self.castingWindowLevel
         window.level = level
         cursorWindow.level = NSWindow.Level(rawValue: level.rawValue + 1)
         volumeHUDWindow.level = NSWindow.Level(rawValue: level.rawValue + 1)

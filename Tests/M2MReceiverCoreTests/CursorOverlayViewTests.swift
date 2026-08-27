@@ -5,9 +5,13 @@ import M2MShared
 
 final class CursorOverlayViewTests: XCTestCase {
     func test光标覆盖窗口始终高于视频窗口() {
+        XCTAssertEqual(
+            ReceiverEngine.castingWindowLevel.rawValue,
+            NSWindow.Level.screenSaver.rawValue
+        )
         XCTAssertGreaterThan(
             ReceiverEngine.cursorWindowLevel.rawValue,
-            NSWindow.Level.screenSaver.rawValue
+            ReceiverEngine.castingWindowLevel.rawValue
         )
     }
 
