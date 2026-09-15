@@ -23,4 +23,17 @@ final class NativeVolumeHUDTests: XCTestCase {
             .init(imageID: 4, filledChiclets: 0)
         )
     }
+
+    func test系统版本决定是否使用私有原生HUD() {
+        XCTAssertTrue(
+            NativeVolumeHUD.supportsSystemVersion(
+                .init(majorVersion: 26, minorVersion: 6, patchVersion: 0)
+            )
+        )
+        XCTAssertFalse(
+            NativeVolumeHUD.supportsSystemVersion(
+                .init(majorVersion: 27, minorVersion: 0, patchVersion: 0)
+            )
+        )
+    }
 }

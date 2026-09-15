@@ -6,8 +6,9 @@ import ObjectiveC.runtime
 /// 调用 Control Center 自己使用的原生音量 HUD。
 ///
 /// 苹果没有公开音量 HUD API；当前系统的入口位于 OSD 私有框架。这里不静态链接
-/// 私有符号，而是在运行时确认类、选择器和方法签名都存在后再调用。系统升级导致
-/// 入口失效时会返回 `false`，由接收端回退到自绘提示条，不影响真实音量调节。
+/// 私有符号，而是在运行时确认类、选择器和方法签名都存在后再调用。macOS 27
+/// 虽然仍保留旧入口和相同签名，第三方进程调用后却不再实际显示，因此直接禁用
+/// 私有路径并回退到自绘提示条，避免把“方法存在”误判为“显示成功”。
 final class NativeVolumeHUD {
     struct Presentation: Equatable {
         let imageID: Int64
@@ -38,6 +39,13 @@ final class NativeVolumeHUD {
     private let showImageFunction: ShowImageFunction?
 
     init() {
+        guard Self.supportsSystemVersion(ProcessInfo.processInfo.operatingSystemVersion) else {
+            frameworkHandle = nil
+            manager = nil
+            showImageFunction = nil
+            return
+        }
+
         frameworkHandle = dlopen(Self.frameworkPath, RTLD_LAZY | RTLD_LOCAL)
 
         guard frameworkHandle != nil,
@@ -104,5 +112,9 @@ final class NativeVolumeHUD {
             imageID: muted ? 4 : 3,
             filledChiclets: muted ? 0 : UInt32((clampedVolume * 100).rounded())
         )
+    }
+
+    static func supportsSystemVersion(_ version: OperatingSystemVersion) -> Bool {
+        version.majorVersion < 27
     }
 }
