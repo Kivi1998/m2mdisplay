@@ -16,7 +16,7 @@ import Foundation
 /// 还在场。
 final class IdleCastingGuard {
     private var timer: DispatchSourceTimer?
-    private let idleThresholdSeconds: TimeInterval
+    private var idleThresholdSeconds: TimeInterval?
     private let checkIntervalSeconds: TimeInterval
     private let onIdleTimeout: () -> Void
 
@@ -28,7 +28,7 @@ final class IdleCastingGuard {
     private static let combinedSessionState = CGEventSourceStateID(rawValue: 0)!
 
     init(
-        idleThresholdSeconds: TimeInterval = 600,
+        idleThresholdSeconds: TimeInterval? = 600,
         checkIntervalSeconds: TimeInterval = 30,
         onIdleTimeout: @escaping () -> Void
     ) {
@@ -38,6 +38,7 @@ final class IdleCastingGuard {
     }
 
     func start() {
+        guard idleThresholdSeconds != nil else { return }
         guard timer == nil else { return }
         let source = DispatchSource.makeTimerSource(queue: .main)
         source.schedule(deadline: .now() + checkIntervalSeconds, repeating: checkIntervalSeconds)
@@ -52,8 +53,16 @@ final class IdleCastingGuard {
         timer = nil
     }
 
+    /// 投屏进行中修改也立即生效；选择“永不”时直接撤销计时器。重新启用后由
+    /// AppState 在当前仍处于投屏状态时再次启动，不必重连视频。
+    func updateThreshold(_ seconds: TimeInterval?) {
+        idleThresholdSeconds = seconds
+        if seconds == nil { stop() }
+    }
+
     private func checkIdle() {
         let idleSeconds = CGEventSource.secondsSinceLastEventType(Self.combinedSessionState, eventType: Self.anyInputEventType)
+        guard let idleThresholdSeconds else { return }
         if idleSeconds >= idleThresholdSeconds {
             onIdleTimeout()
         }

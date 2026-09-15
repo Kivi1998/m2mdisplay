@@ -59,5 +59,10 @@ let package = Package(
             dependencies: ["M2MSenderCore", "M2MReceiverCore", "M2MShared"],
             path: "Sources/M2MApp"
         ),
+        .testTarget(
+            name: "M2MAppTests",
+            dependencies: ["M2MApp"],
+            path: "Tests/M2MAppTests"
+        ),
     ]
 )

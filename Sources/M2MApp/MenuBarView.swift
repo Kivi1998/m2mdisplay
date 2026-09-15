@@ -16,7 +16,7 @@ struct MenuBarView: View {
                     }
                     .disabled(appState.isBusy)
                     Button("切换角色", action: appState.resetRole)
-                        .disabled(appState.isBusy)
+                        .disabled(appState.isBusy || appState.isMainDisplayBusy)
                 }
 
                 if role == .sender {
@@ -32,6 +32,39 @@ struct MenuBarView: View {
                         }
                         .labelsHidden()
                         .pickerStyle(.segmented)
+                        .disabled(appState.isBusy || appState.isMainDisplayBusy)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("主显示器").font(.caption).foregroundStyle(.secondary)
+                        Picker("主显示器", selection: Binding(
+                            get: { appState.mainDisplayPreference },
+                            set: { appState.setMainDisplayPreference($0) }
+                        )) {
+                            ForEach(MainDisplayPreference.allCases) { preference in
+                                Text(appState.displayName(for: preference)).tag(preference)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .disabled(appState.isBusy || appState.isMainDisplayBusy)
+                        Text("另一台自动作为扩展显示器")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("无操作后停止投屏").font(.caption).foregroundStyle(.secondary)
+                        Picker("无操作后停止投屏", selection: Binding(
+                            get: { appState.idleStopPreference },
+                            set: { appState.setIdleStopPreference($0) }
+                        )) {
+                            ForEach(IdleStopPreference.allCases) { preference in
+                                Text(preference.displayName).tag(preference)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
                         .disabled(appState.isBusy)
                     }
                 }

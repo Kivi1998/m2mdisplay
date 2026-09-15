@@ -183,6 +183,25 @@ public final class SenderEngine {
         }
     }
 
+    /// 运行中可动态切换主显示器，不重建虚拟屏、不重连视频。显示器排列调用可能
+    /// 等待 WindowServer，因此放到后台任务，避免卡住菜单栏界面。
+    @discardableResult
+    public func setMainDisplay(receiverIsMain: Bool) async -> Bool {
+        guard let virtualDisplay else {
+            log.write(.warning, "虚拟显示器尚未创建，暂不应用主显示器选择")
+            return false
+        }
+        let changed = await Task.detached(priority: .userInitiated) {
+            virtualDisplay.setMainDisplay(receiverIsMain: receiverIsMain)
+        }.value
+        if changed {
+            log.write(.info, receiverIsMain ? "主显示器已切换为接收端" : "主显示器已切换为发送端")
+        } else {
+            log.write(.error, "切换主显示器失败")
+        }
+        return changed
+    }
+
     /// 停止不仅关闭视频和鼠标通道，还要销毁虚拟显示器。WindowServer 会在显示器
     /// 离线时把其上的窗口迁回仍在线的内置屏幕，因此停止后不会留下“幽灵桌面”。
     public func stop() async {

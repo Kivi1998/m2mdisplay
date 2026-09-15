@@ -31,8 +31,10 @@ Dock、菜单栏都隐藏掉。这个规则不是随便定的——已经因为�
   原生风格光标；音频使用固定容量环形缓冲和 AVAudioEngine 从 iMac 内建
   扬声器播放，并把音量键命令应用到 iMac 系统音量。
 - `M2MApp`：SwiftUI 菜单栏图形界面，两台机器装同一个 App，启动时选角色，
-  可以随时开始/停止投屏。用 `scripts/package-m2mapp.sh` 打包成真正的
-  `.app`（SPM 不会自动做这件事）。
+  可以随时开始/停止投屏，并在投屏期间动态选择哪台机器承担主显示器，另一台
+  自动保持为扩展显示器；选择按设备角色持久化。菜单栏还可以持久化设置无操作
+  自动停止投屏的时间。用 `scripts/package-m2mapp.sh` 打包成真正的 `.app`
+  （SPM 不会自动做这件事）。
 - `M2MShared`：两端共用的协议定义（`CursorPacket`/`FrameHeader`/
   `AckPacket`）和持久化事件日志 `EventLog`（写到
   `~/Library/Logs/M2MDisplay/`）。

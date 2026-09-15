@@ -13,9 +13,16 @@ final class AppState: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var isQuitting = false
     @Published private(set) var audioOutputPreference: AudioOutputPreference
+    @Published private(set) var mainDisplayPreference: MainDisplayPreference
+    @Published private(set) var senderDeviceName: String
+    @Published private(set) var receiverDeviceName = "接收端"
+    @Published private(set) var isMainDisplayBusy = false
+    @Published private(set) var idleStopPreference: IdleStopPreference
 
     private let roleStore = RoleStore()
     private let audioOutputPreferenceStore = AudioOutputPreferenceStore()
+    private let mainDisplayPreferenceStore = MainDisplayPreferenceStore()
+    private let idleStopPreferenceStore = IdleStopPreferenceStore()
     private let log = EventLog(role: "app")
     private let lifecycleScripts = PeerLifecycleScripts()
     private let controlServer = PeerControlServer()
@@ -23,12 +30,18 @@ final class AppState: ObservableObject {
     private var receiverEngine: ReceiverEngine?
     private let maxEvents = 5
     private var didPrepareForTermination = false
-    private lazy var idleCastingGuard = IdleCastingGuard { [weak self] in
-        self?.handleIdleTimeout()
-    }
+    private lazy var idleCastingGuard = IdleCastingGuard(
+        idleThresholdSeconds: idleStopPreference.thresholdSeconds
+    ) { [weak self] in self?.handleIdleTimeout() }
 
     init() {
         audioOutputPreference = audioOutputPreferenceStore.saved
+        mainDisplayPreference = mainDisplayPreferenceStore.saved
+        idleStopPreference = idleStopPreferenceStore.saved
+        senderDeviceName = DeviceModelReader.displayName(
+            for: DeviceModelReader.localModelIdentifier(),
+            fallback: "发送端"
+        )
         if let requestedRole = roleStore.roleFromLaunchArguments {
             roleStore.savedRole = requestedRole
             role = requestedRole
@@ -53,6 +66,44 @@ final class AppState: ObservableObject {
         if let senderEngine {
             Task { await senderEngine.setAudioForwarding(toReceiver: preference == .receiver) }
         }
+    }
+
+    /// 选择会立即应用到已经在线的虚拟显示器；未投屏时只记录偏好，下次创建
+    /// 虚拟显示器后再应用。设备角色比临时显示器 ID 稳定，适合长期保存。
+    func setMainDisplayPreference(_ preference: MainDisplayPreference) {
+        guard !isMainDisplayBusy, preference != mainDisplayPreference else { return }
+        let previousPreference = mainDisplayPreference
+        mainDisplayPreference = preference
+        guard let senderEngine, isRunning else {
+            mainDisplayPreferenceStore.saved = preference
+            return
+        }
+        isMainDisplayBusy = true
+        Task {
+            let changed = await senderEngine.setMainDisplay(receiverIsMain: preference == .receiver)
+            if changed {
+                mainDisplayPreferenceStore.saved = preference
+                pushEvent("主显示器已切换到 \(displayName(for: preference))")
+            } else {
+                mainDisplayPreference = previousPreference
+                pushEvent("主显示器切换失败，详见发送端日志")
+            }
+            isMainDisplayBusy = false
+        }
+    }
+
+    func displayName(for preference: MainDisplayPreference) -> String {
+        preference == .sender ? senderDeviceName : receiverDeviceName
+    }
+
+    func setIdleStopPreference(_ preference: IdleStopPreference) {
+        idleStopPreference = preference
+        idleStopPreferenceStore.saved = preference
+        idleCastingGuard.updateThreshold(preference.thresholdSeconds)
+        if isRunning { idleCastingGuard.start() }
+        pushEvent(preference == .never
+            ? "已关闭无操作自动停止投屏"
+            : "无操作 \(preference.displayName)后自动停止投屏")
     }
 
     func selectRole(_ role: AppRole) {
@@ -102,6 +153,9 @@ final class AppState: ObservableObject {
             Task {
                 let startResult = await lifecycleScripts.startReceiver()
                 reportLifecycleResult(startResult, successMessage: "iMac 接收端已启动")
+                if let identifier = await DeviceModelReader.remoteModelIdentifier(host: Endpoints.receiverHost) {
+                    receiverDeviceName = DeviceModelReader.displayName(for: identifier, fallback: "接收端")
+                }
             }
         case .receiver:
             let engine = ReceiverEngine()
@@ -153,10 +207,18 @@ final class AppState: ObservableObject {
                 guard let senderEngine else { break }
                 let prepared = await senderEngine.prepareVirtualDisplay(width: 1920, height: 1080, backingScale: 2)
                 if prepared {
-                    await senderEngine.start(
-                        receiverHost: Endpoints.receiverHost,
-                        forwardAudioToReceiver: audioOutputPreference == .receiver
+                    let arranged = await senderEngine.setMainDisplay(
+                        receiverIsMain: mainDisplayPreference == .receiver
                     )
+                    if arranged {
+                        await senderEngine.start(
+                            receiverHost: Endpoints.receiverHost,
+                            forwardAudioToReceiver: audioOutputPreference == .receiver
+                        )
+                    } else {
+                        pushEvent("应用主显示器选择失败，已取消本次投屏")
+                        await senderEngine.stop()
+                    }
                 }
             case .receiver:
                 pushEvent("接收端将在收到真实首帧后自动显示")

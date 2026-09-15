@@ -7,6 +7,7 @@ final class VirtualDisplay {
     let logicalHeight: Int
     let pixelWidth: Int
     let pixelHeight: Int
+    private let builtInDisplayID: CGDirectDisplayID
     private let ref: M2MVirtualDisplayRef
 
     init?(name: String, logicalWidth: Int, logicalHeight: Int, backingScale: Int, refreshRate: Double, widthMM: Int, heightMM: Int) {
@@ -134,7 +135,34 @@ final class VirtualDisplay {
         self.logicalHeight = logicalHeight
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
+        self.builtInDisplayID = builtInDisplayID
         print("[VirtualDisplay] active Retina mode: looks like \(logicalWidth)x\(logicalHeight), backing pixels \(pixelWidth)x\(pixelHeight)")
+    }
+
+    /// 保持 MacBook 在左、M2M 虚拟屏在右，只切换谁位于全局坐标原点。
+    /// macOS 把位于 (0,0) 的显示器视为主显示器，因此无需私有接口。
+    func setMainDisplay(receiverIsMain: Bool) -> Bool {
+        let origins = Self.displayOrigins(
+            builtInWidth: Int32(CGDisplayBounds(builtInDisplayID).width.rounded()),
+            receiverIsMain: receiverIsMain
+        )
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success, let config else { return false }
+
+        CGConfigureDisplayOrigin(config, builtInDisplayID, origins.builtInX, 0)
+        CGConfigureDisplayOrigin(config, displayID, origins.virtualX, 0)
+
+        guard CGCompleteDisplayConfiguration(config, .forSession) == .success else { return false }
+        let expectedMain = receiverIsMain ? displayID : builtInDisplayID
+        return CGDisplayIsMain(expectedMain) != 0 &&
+            CGDisplayMirrorsDisplay(displayID) == kCGNullDirectDisplay
+    }
+
+    static func displayOrigins(
+        builtInWidth: Int32,
+        receiverIsMain: Bool
+    ) -> (builtInX: Int32, virtualX: Int32) {
+        receiverIsMain ? (-builtInWidth, 0) : (0, builtInWidth)
     }
 
     private static func builtInDisplayID(excluding excludedID: CGDirectDisplayID) -> CGDirectDisplayID? {
