@@ -92,6 +92,10 @@ scripts/package-m2mapp.sh
 
 ## 已知的坑（排查过、别再踩一遍）
 
+- **无操作停止时间不能只靠 App 计时器保证**：发送端系统熄屏并锁屏后，抓屏会
+  报 `-3815` 并失去虚拟桌面，可能早于用户选择的一小时。`SenderPowerAssertion`
+  在投屏期间保持发送端显示器和系统唤醒，所有启动失败、停止及抓屏恢复失败
+  都经 `teardownTransport()` 释放断言；不模拟输入，不修改系统熄屏或密码设置。
 - **视频端口一度死活绑不上，报 `Address already in use`，重启 iMac 就好了**：
   真实发生过。一开始怀疑是 `NWListener` 快速重启时的 TIME_WAIT 竞态（顺手
   加上了 `allowLocalEndpointReuse`/强制 IPv4，但没解决问题——这两个改动

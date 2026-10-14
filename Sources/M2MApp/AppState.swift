@@ -101,6 +101,7 @@ final class AppState: ObservableObject {
         idleStopPreferenceStore.saved = preference
         idleCastingGuard.updateThreshold(preference.thresholdSeconds)
         if isRunning { idleCastingGuard.start() }
+        log.write(.info, "无操作自动停止投屏设置已更新：\(preference.displayName)")
         pushEvent(preference == .never
             ? "已关闭无操作自动停止投屏"
             : "无操作 \(preference.displayName)后自动停止投屏")
@@ -182,7 +183,7 @@ final class AppState: ObservableObject {
     /// 让两台 Mac 都能恢复各自平时设置的息屏/屏保节奏，不至于亮一整晚。
     private func handleIdleTimeout() {
         guard role == .sender, isRunning, !isBusy else { return }
-        log.write(.info, "投屏期间检测到长时间无操作，自动停止投屏")
+        log.write(.info, "投屏期间无操作已达到 \(idleStopPreference.displayName)，自动停止投屏")
         pushEvent("长时间无操作，已自动停止投屏")
         stopCasting()
     }

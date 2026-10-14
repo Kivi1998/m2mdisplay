@@ -23,6 +23,7 @@ public final class SenderEngine {
     public var onStateChange: ((SenderState) -> Void)?
 
     private let log = EventLog(role: "sender")
+    private let powerAssertion = SenderPowerAssertion()
     private var virtualDisplay: VirtualDisplay?
     private var capturer: FrameCapturer?
     private var encoder: VideoEncoder?
@@ -83,6 +84,17 @@ public final class SenderEngine {
         self.forwardAudioToReceiver = forwardAudioToReceiver
         state = .starting
         log.write(.info, "正在向 \(receiverHost) 发起投屏")
+
+        do {
+            try powerAssertion.start()
+            log.write(.info, "发送端防空闲熄屏与休眠断言已生效，投屏时长由无操作停止设置控制")
+        } catch {
+            state = .error(error.localizedDescription)
+            log.write(.error, "无法保持发送端唤醒，已取消投屏：\(error)")
+            teardownTransport()
+            await releaseVirtualDisplay()
+            return
+        }
 
         let videoSender = VideoSender(host: receiverHost, port: NetworkConfig.videoPort)
         self.videoSender = videoSender
@@ -233,6 +245,12 @@ public final class SenderEngine {
         mouseTap = nil
         mediaKeyTap = nil
         ackReceiver = nil
+        let releaseFailures = powerAssertion.stop()
+        if releaseFailures.isEmpty {
+            log.write(.info, "发送端电源断言已释放，恢复系统空闲熄屏与休眠")
+        } else {
+            log.write(.error, "释放发送端电源断言失败：\(releaseFailures)")
+        }
     }
 
     /// 销毁接口返回后，WindowServer 仍可能需要几秒才把显示器从活动列表中移除。
